@@ -12,3 +12,11 @@ GEMINI.local.md
 # Decompilation artifacts - regenerable from the XAPK, very large
 re/smali/
 re/apktool/
+
+# Machine-specific / build
+local.properties
+.gradle/
+build/
+.idea/
+*.iml
+.DS_Store

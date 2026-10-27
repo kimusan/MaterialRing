@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- A minimalist ring: a single clean annulus centered in the 108dp canvas. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,30 A24,24 0 1,0 54.001,30 Z M54,38 A16,16 0 1,1 54.001,38 Z"
+        android:fillType="evenOdd" />
+</vector>
