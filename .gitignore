@@ -1,0 +1,14 @@
+# AI assistant files - never commit to this repo
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+GEMINI.local.md
+.claude/
+.cursor/
+.cursorrules
+.github/copilot-instructions.md
+
+# Decompilation artifacts - regenerable from the XAPK, very large
+re/smali/
+re/apktool/
