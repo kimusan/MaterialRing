@@ -1,7 +1,7 @@
 package com.kschulz.aro.data.ble
 
 /**
- * Directional byte-order helpers. The QRing protocol is deliberately asymmetric:
+ * Directional byte-order helpers. The ring protocol is deliberately asymmetric:
  * phone->device multi-byte integers are little-endian, device->phone are big-endian.
  * These two helpers must NOT be unified (see re/PROTOCOL.md section 3).
  */

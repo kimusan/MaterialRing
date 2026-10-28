@@ -1,4 +1,4 @@
-# QRing Clean-Room App — Design
+# Aro Clean-Room App — Design
 
 Date: 2026-10-27
 Status: proposed, pending review
@@ -7,7 +7,7 @@ Companion: `re/PROTOCOL.md` (BLE protocol, authoritative), `re/CAPTURE_RUNDOWN.m
 
 ## Goal
 
-A local-first, privacy-respecting Android app that talks to the QRing smart ring
+A local-first, privacy-respecting Android app that talks to a smart ring
 directly over BLE, stores all health data on-device, and exposes a modern Material 3
 UI. No cloud, no analytics, no third-party location or speech. Any data shared outward
 (Google Health Connect) is an explicit user toggle, off by default.
@@ -43,11 +43,11 @@ the *protocol* (verified in `re/PROTOCOL.md`) but write every layer from scratch
 ## Module layout (single Gradle module, package-enforced boundaries)
 
 ```
-com.kschulz.qring/
+com.kschulz.aro/
   data/ble/            RingBleTransport, RingProtocolCodec, Frame, Opcodes, Crc16, SumCheck
   data/model/          Ring, Profile, StepDay, SleepSession, SleepSegment,
                        HeartRateSample, BloodPressure, BodyBatteryPoint
-  data/db/             QRingDatabase, Room entities, DAOs, TypeConverters
+  data/db/             AroDatabase, Room entities, DAOs, TypeConverters
   data/repository/     DeviceRepository, HealthRepository, ProfileRepository,
                        BodyBatteryRepository
   data/sync/           SyncEngine, SyncJob (WorkManager), DistributionBitmap
@@ -70,7 +70,7 @@ com.kschulz.qring/
 - Owns CCCD enable (write `00002902` = `01 00`) and reconnection.
 - No knowledge of opcodes or payloads.
 
-### RingProtocolCodec (QRing-specific, swappable)
+### RingProtocolCodec (ring-specific, swappable)
 - `Opcodes` object: the full table from `re/PROTOCOL.md` §4.
 - TX: `encode(cmd, payload): Frame` -> `[0xC4 | cmd | len_lo | len_hi | crc16_lo | crc16_hi | payload]`; empty payload -> `[0xC4|cmd|00|00|FF|FF]`.
 - RX: `decode(raw: ByteArray): Parsed` -> strips cmd byte (mask `& 0x7F` for error flag) and trailing sum-checksum; verifies `Σ(data[0..n-2]) & 0xFF == data[n-1]`.
@@ -160,7 +160,7 @@ not presented as a clinical vital.
 - All phone-home domains (§9). Baidu location/AI, Firebase, Microsoft speech, QC cloud,
   websocket channel, watch-face and guide CDNs.
 - No custom pairing cipher exists to port (the bind is standard Android bonding +
-  name-prefix discovery `QRing` / `QRingBand`).
+  name-prefix discovery using the ring's fixed advertising prefix).
 
 ## Screens (Material 3, dynamic color)
 

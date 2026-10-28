@@ -1,7 +1,7 @@
 package com.kschulz.aro.data.ble
 
 /**
- * QRing-specific protocol codec. The swappable brain of the BLE layer: a different
+ * ring-specific protocol codec. The swappable brain of the BLE layer: a different
  * ring brand provides a different [RingProtocolCodec] and nothing above `data/ble`
  * changes. Pure Kotlin, no Android dependency, so it is fully unit-testable against
  * captured frames.

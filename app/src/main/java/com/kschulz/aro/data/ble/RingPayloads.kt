@@ -3,7 +3,7 @@ package com.kschulz.aro.data.ble
 import com.kschulz.aro.data.model.StepDay
 
 /**
- * Pure byte parsers for QRing response payloads. No Android, no transport: ByteArray in,
+ * Pure byte parsers for the ring response payloads. No Android, no transport: ByteArray in,
  * model out. These are the byte-correct core of the protocol (verified against
  * re/PROTOCOL.md sections 6 and 7) and the part that is unit-tested on the JVM.
  */

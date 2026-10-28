@@ -1,7 +1,7 @@
 package com.kschulz.aro.data.ble
 
 /**
- * CRC-16 used by the QRing TX framing.
+ * CRC-16 used by the ring TX framing.
  * Init 0xFFFF, polynomial 0xA001, reflected bit-wise (LSB first).
  * Traced to smali `CRC16.calcCrc16([B)I`.
  */

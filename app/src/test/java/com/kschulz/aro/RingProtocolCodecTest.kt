@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Proves the codec matches the reverse-engineered QRing framing in re/PROTOCOL.md.
+ * Proves the codec matches the reverse-engineered ring framing in re/PROTOCOL.md.
  * Pure JVM; run with `./gradlew :app:testDebugUnitTest`.
  */
 class RingProtocolCodecTest {

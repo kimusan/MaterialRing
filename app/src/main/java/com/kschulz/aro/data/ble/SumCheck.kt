@@ -1,7 +1,7 @@
 package com.kschulz.aro.data.ble
 
 /**
- * Additive checksum used by the QRing RX framing.
+ * Additive checksum used by the ring RX framing.
  * The last byte must equal the low 8 bits of the sum of all preceding bytes.
  * Traced to smali `QCDataParser.checkCrc`.
  */

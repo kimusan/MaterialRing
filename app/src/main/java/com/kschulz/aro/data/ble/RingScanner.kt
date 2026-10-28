@@ -20,8 +20,10 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
 /**
- * Discovers rings by advertising-name prefix (re/PROTOCOL.md sections 1 and 5: `QRing` /
- * `QRingBand`). Standard Android bonding handles pairing; there is no custom handshake.
+ * Discovers the ring by advertising-name model prefix. The ring advertises as
+ * `<model>_<suffix>` (e.g. `R03_0202`); the model list is the set the original app
+ * filters on (its DeviceBindActivity). Standard Android bonding handles pairing;
+ * there is no custom handshake.
  */
 @SuppressLint("MissingPermission")
 @Singleton
@@ -41,7 +43,7 @@ class RingScanner @Inject constructor(
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val name = result.scanRecord?.deviceName ?: return
-            if (name.startsWith(NAME_PREFIX_1) || name.startsWith(NAME_PREFIX_2)) {
+            if (MODEL_PREFIXES.any { name.startsWith(it) }) {
                 val device = result.device
                 _discoveries.tryEmit(
                     ScannedRing(
@@ -78,7 +80,13 @@ class RingScanner @Inject constructor(
     }
 
     companion object {
-        const val NAME_PREFIX_1 = "QRing"
-        const val NAME_PREFIX_2 = "QRingBand"
+        // Model prefixes the ring advertises with (the original app's scan list).
+        // The advertising name is "<model>_<suffix>", e.g. R03_0202, so the user's
+        // ring matches "R03".
+        val MODEL_PREFIXES = listOf(
+            "R01", "R02", "R03", "R04", "R05", "R06", "R11",
+            "VK-5098", "MERLIN", "Hello Ring", "RING1", "boAtring",
+            "Y25", "H59", "DS1314", "DS520", "DS12",
+        )
     }
 }

@@ -2,7 +2,7 @@ package com.kschulz.aro.data.ble
 
 import java.util.UUID
 
-/** GATT UUIDs for the QRing serial-port (NUS-style) data channel.
+/** GATT UUIDs for the ring serial-port (NUS-style) data channel.
  *  Source: re/PROTOCOL.md section 1 (traced to Oudmon Constants.smali). */
 object GattUuids {
     val SERIAL_PORT_SERVICE: UUID = UUID.fromString("de5bf728-d711-4e47-af26-65e3012a5dc7")

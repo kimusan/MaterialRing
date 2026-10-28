@@ -44,7 +44,7 @@ fun ScanScreen(viewModel: DeviceViewModel = hiltViewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            "Put the ring in range. It advertises with the name prefix QRing.",
+            "Put the ring in range. It advertises with a fixed name prefix.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

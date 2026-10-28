@@ -1,6 +1,6 @@
 # Aro
 
-A clean-room, local-first Android companion app for the QRing smart ring. It talks to the
+A clean-room, local-first Android companion app for a smart ring. It talks to the
 ring directly over
 Bluetooth Low Energy, stores every health reading on the device, and shows a modern
 Material 3 (Material You) UI.
@@ -19,7 +19,7 @@ when you explicitly turn it on in Settings.
 
 ## What it does
 
-- **Scans and binds** the ring by advertising-name prefix (`QRing` / `QRingBand`), using
+- **Scans and binds** the ring by its fixed advertising-name prefix, using
   standard Android bonding (there is no custom pairing handshake to port).
 - **Streams live vitals**: real-time heart rate and battery level update on the home
   screen with no polling.
@@ -63,7 +63,7 @@ com.kschulz.aro/
 
 The transport (`RingBleTransport`) owns the Android GATT connection and knows nothing
 about opcodes or payloads: it writes an already-framed `Frame` and emits raw notify
-bytes. The codec (`RingProtocolCodec`) is QRing-specific: it adds the transmit header and
+bytes. The codec (`RingProtocolCodec`) is specific to this ring: it adds the transmit header and
 CRC, and strips the receive frame. A different ring brand is a new codec plus transport
 binding; nothing above `data/ble` changes.
 

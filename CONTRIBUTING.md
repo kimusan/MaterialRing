@@ -12,7 +12,7 @@ matter more here than usual.
 2. **Data stays on-device.** Health records live in Room. Do not add a cloud sync, an
    account, or a server. Profile switching is a local query filter, never a logout.
 3. **Keep the protocol layer swappable.** `data/ble` separates the transport (GATT,
-   brand-agnostic) from the codec (QRing-specific). New ring brands add a codec and a
+   brand-agnostic) from the codec (ring-specific). New ring brands add a codec and a
    transport binding; they do not touch the layers above.
 4. **Sync must stay idempotent and resumable.** Reads upsert on a composite primary key.
    Do not introduce inserts that can duplicate a re-pulled range.

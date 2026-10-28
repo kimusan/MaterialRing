@@ -1,7 +1,7 @@
 package com.kschulz.aro.data.ble
 
 /**
- * QRing command opcodes, extracted from the Oudmon SDK `Constants` class.
+ * Command opcodes for the ring, extracted from the Oudmon SDK `Constants` class.
  * These are the byte values written as `cmd` (TX byte 1, RX byte 0 before the 0x80 mask).
  * Source: re/PROTOCOL.md section 4 (traced to smali).
  */
