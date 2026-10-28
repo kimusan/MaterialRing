@@ -5,13 +5,14 @@ AGENTS.md
 GEMINI.md
 GEMINI.local.md
 .claude/
+.superpowers/
 .cursor/
 .cursorrules
 .github/copilot-instructions.md
 
-# Decompilation artifacts - regenerable from the XAPK, very large
-re/smali/
-re/apktool/
+# The downloaded XAPK and the entire decompilation work area. Never commit.
+QRing/
+re/
 
 # Machine-specific / build
 local.properties
