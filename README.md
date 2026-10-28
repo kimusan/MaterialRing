@@ -1,6 +1,7 @@
-# QRing
+# Aro
 
-A clean-room Android app for the QRing smart ring. It talks to the ring directly over
+A clean-room, local-first Android companion app for the QRing smart ring. It talks to the
+ring directly over
 Bluetooth Low Energy, stores every health reading on the device, and shows a modern
 Material 3 (Material You) UI.
 
@@ -44,12 +45,12 @@ when you explicitly turn it on in Settings.
 A single Gradle module with package-enforced boundaries:
 
 ```
-com.kschulz.qring/
+com.kschulz.aro/
   data/ble/            RingBleTransport (GATT), RingCommandClient, RingProtocolCodec,
                        Opcodes, Crc16, SumCheck, ByteOrder, RingPayloads, RingScanner
   data/model/          Room entities: Profile, Ring, StepDay, SleepSession, SleepSegment,
                        HeartRateSample, BloodPressure, BodyBatteryPoint, AppSetting
-  data/db/             QRingDatabase, DAOs, type converters
+  data/db/             AroDatabase, DAOs, type converters
   data/repository/     ProfileRepository, DeviceRepository, HealthRepository,
                        SettingsRepository (all profile-scoped)
   data/sync/           SyncEngine, SyncJob (WorkManager), DistributionBitmap, TimeSource

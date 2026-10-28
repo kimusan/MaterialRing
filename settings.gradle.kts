@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "qring"
+rootProject.name = "aro"
 include(":app")

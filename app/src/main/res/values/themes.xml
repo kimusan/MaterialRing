@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- No-op base theme; the real theming is done in Compose (Material 3). -->
-    <style name="Theme.QRing" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Aro" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>

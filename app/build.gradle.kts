@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.kschulz.qring"
+    namespace = "com.kschulz.aro"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.kschulz.qring"
+        applicationId = "com.kschulz.aro"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
