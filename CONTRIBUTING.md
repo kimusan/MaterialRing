@@ -37,6 +37,6 @@ assumed.
 
 ## Local-only files
 
-`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.claude/`, the XAPK (`QRing/`), and the
+`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.claude/`, the downloaded XAPK, and the
 decompilation work area (`re/`) are gitignored and must stay out of the repo. Do not
 force-add them.
