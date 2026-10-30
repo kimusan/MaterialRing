@@ -1,12 +1,15 @@
 package com.kschulz.aro.data.sync
 
 import com.kschulz.aro.data.ble.ByteOrder
+import com.kschulz.aro.data.ble.AroDbg
 import com.kschulz.aro.data.ble.Opcodes
 import com.kschulz.aro.data.ble.RingCommand
 import com.kschulz.aro.data.ble.RingPayloads
 import com.kschulz.aro.data.model.BloodPressure
 import com.kschulz.aro.data.model.BpSource
 import com.kschulz.aro.data.model.HeartRateSample
+import com.kschulz.aro.data.model.SleepSegment
+import com.kschulz.aro.data.model.SleepSession
 import com.kschulz.aro.data.model.StepDay
 import com.kschulz.aro.data.repository.HealthStore
 import com.kschulz.aro.domain.BodyBattery
@@ -35,20 +38,28 @@ class SyncEngine @Inject constructor(
     suspend fun sync(profileId: Long, time: TimeSource): SyncResult {
         if (!command.isConnected) return SyncResult(connected = false)
 
+        // The vendor's post-bind init chain sends SET_DEVICE_TIME (0x01) first, before any
+        // data query; the ring answers history pulls only once it has a clock. Do the same
+        // here so the 0x46 distribution query below is not answered with nothing.
+        sendTimeBaseline(time)
+
         val distribution = queryDistribution()
         val days = if (distribution != null) DistributionBitmap.daysToPull(distribution)
         else DistributionBitmap.recentWindow()
+        com.kschulz.aro.data.ble.AroDbg.d("sync start: distribution=${distribution?.toString(16)} days=${days.sorted()}")
 
         val today = time.todayEpochDay()
         var steps = 0
         var bpReadings = 0
         var hrSamples = 0
+        var sleepSessions = 0
 
         for (daysAgo in days) {
             val epochDay = time.epochDayForOffset(daysAgo)
             steps += pullStepsForDay(profileId, epochDay, daysAgo).size
             bpReadings += pullManualBp(profileId).size
             hrSamples += pullHeartRate(profileId, daysAgo).size
+            sleepSessions += pullSleep(profileId, epochDay, daysAgo).size
         }
 
         // Body battery is derived from what we just stored; recompute for the window.
@@ -61,6 +72,10 @@ class SyncEngine @Inject constructor(
         // Confirm the bitmap cleared; report whether it did (best-effort).
         val finalDistribution = queryDistribution()
         val confirmed = finalDistribution == null || DistributionBitmap.isComplete(finalDistribution)
+        com.kschulz.aro.data.ble.AroDbg.d(
+            "sync done: steps=$steps bp=$bpReadings hr=$hrSamples sleep=$sleepSessions " +
+                "finalDistribution=${finalDistribution?.toString(16)} cleared=$confirmed",
+        )
 
         return SyncResult(
             connected = true,
@@ -68,6 +83,7 @@ class SyncEngine @Inject constructor(
             steps = steps,
             bpReadings = bpReadings,
             hrSamples = hrSamples,
+            sleepSessions = sleepSessions,
             distributionCleared = confirmed,
         )
     }
@@ -75,6 +91,18 @@ class SyncEngine @Inject constructor(
     private suspend fun queryDistribution(): Int? {
         val rsp = command.request(Opcodes.QUERY_DATA_DISTRIBUTION) ?: return null
         return DistributionBitmap.parse(rsp.payload)
+    }
+
+    private suspend fun sendTimeBaseline(time: TimeSource) {
+        val c = time.localClock()
+        val payload = RingPayloads.buildSetTimePayload(
+            c.year, c.month, c.day, c.hour, c.minute, c.second,
+        )
+        AroDbg.d(
+            "set time baseline ${c.year}-${c.month}-${c.day} " +
+                "${c.hour}:${c.minute}:${c.second} ${AroDbg.hex(payload)}",
+        )
+        command.request(Opcodes.SET_DEVICE_TIME, payload)
     }
 
     private suspend fun pullStepsForDay(profileId: Long, epochDay: Long, daysAgo: Int): List<StepDay> {
@@ -120,6 +148,27 @@ class SyncEngine @Inject constructor(
         if (samples.isNotEmpty()) health.upsertHeartRate(profileId, samples)
         return samples
     }
+
+    private suspend fun pullSleep(profileId: Long, epochDay: Long, daysAgo: Int): List<SleepSession> {
+        // Request mirrors the vendor: [dayOffset, 0x0F, startIdx=0, endIdx=0x5F] (full slot
+        // range in one shot). The device answers a 0x44 record; parseSleep decodes the
+        // first (main) record. daysAgo is capped by the ring (it rejects offsets > 29).
+        if (daysAgo > 29) return emptyList()
+        val req = byteArrayOf(daysAgo.toByte(), 0x0F, 0x00, 0x5F.toByte())
+        val rsp = command.request(Opcodes.GET_SLEEP, req) ?: return emptyList()
+        val parsed = RingPayloads.parseSleep(rsp.payload, epochDay) ?: return emptyList()
+        val session = SleepSession(
+            profileId = profileId,
+            startEpoch = parsed.startEpochMs,
+            endEpoch = parsed.endEpochMs,
+            isNap = parsed.isNap,
+        )
+        val segments = parsed.stages.map {
+            SleepSegment(sessionId = 0, stage = it.stage, durationMin = it.durationMin)
+        }
+        health.upsertSleep(profileId, session, segments)
+        return listOf(session)
+    }
 }
 
 data class SyncResult(
@@ -128,5 +177,6 @@ data class SyncResult(
     val steps: Int = 0,
     val bpReadings: Int = 0,
     val hrSamples: Int = 0,
+    val sleepSessions: Int = 0,
     val distributionCleared: Boolean = false,
 )

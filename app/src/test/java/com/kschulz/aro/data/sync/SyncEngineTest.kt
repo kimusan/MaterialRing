@@ -13,7 +13,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -28,6 +30,9 @@ class SyncEngineTest {
         private val distribution: ByteArray? = ByteArray(4),
     ) : RingCommand {
         var stepsRequests = 0
+        val sequence = mutableListOf<Int>()
+        var timeSentBeforeDistribution = false
+        var lastTimePayload: ByteArray? = null
 
         override val connectionState: StateFlow<ConnectionState> =
             MutableStateFlow(if (connected) ConnectionState.CONNECTED else ConnectionState.DISCONNECTED)
@@ -37,7 +42,18 @@ class SyncEngineTest {
         override suspend fun request(cmd: Int, payload: ByteArray?, timeoutMs: Long): ParsedFrame? {
             if (!connected) return null
             return when (cmd) {
-                Opcodes.QUERY_DATA_DISTRIBUTION -> distribution?.let { ParsedFrame(cmd, false, it) }
+                Opcodes.SET_DEVICE_TIME -> {
+                    if (sequence.isEmpty()) timeSentBeforeDistribution = true
+                    sequence.add(cmd)
+                    lastTimePayload = payload
+                    ParsedFrame(cmd, false, ByteArray(0))
+                }
+
+                Opcodes.QUERY_DATA_DISTRIBUTION -> {
+                    sequence.add(cmd)
+                    distribution?.let { ParsedFrame(cmd, false, it) }
+                }
+
                 Opcodes.GET_STEP_TODAY, Opcodes.GET_STEP_TOTAL_SOMEDAY -> {
                     stepsRequests++
                     ParsedFrame(cmd, false, stepsPayload(5000))
@@ -103,6 +119,11 @@ class SyncEngineTest {
         override suspend fun upsertSteps(profileId: Long, days: List<StepDay>) { steps += days }
         override suspend fun upsertBloodPressure(profileId: Long, readings: List<BloodPressure>) { bp += readings }
         override suspend fun upsertHeartRate(profileId: Long, samples: List<HeartRateSample>) { hr += samples }
+        override suspend fun upsertSleep(
+            profileId: Long,
+            session: com.kschulz.aro.data.model.SleepSession,
+            segments: List<com.kschulz.aro.data.model.SleepSegment>,
+        ) {}
     }
 
     private object NoopBodyBattery : BodyBattery {
@@ -163,5 +184,31 @@ class SyncEngineTest {
 
         assertFalse(result.connected)
         assertEquals(0, result.daysSynced)
+    }
+
+    @Test
+    fun `sync sends the 0x01 time baseline before the 0x46 distribution query`() {
+        val command = FakeCommand(distribution = distTodayUnsynced())
+        val engine = SyncEngine(command, RecordingStore(), NoopBodyBattery)
+
+        runBlocking { engine.sync(1, time) }
+
+        assertTrue("0x01 must be sent", command.sequence.contains(Opcodes.SET_DEVICE_TIME))
+        assertTrue("0x01 must precede 0x46", command.timeSentBeforeDistribution)
+    }
+
+    @Test
+    fun `the 0x01 baseline carries the fixed clock as a 7-byte BCD block`() {
+        // 1767323045s = 2026-01-02 03:04:05 UTC -> BCD 26 01 02 03 04 05, language 01.
+        val command = FakeCommand(distribution = distTodayUnsynced())
+        val engine = SyncEngine(command, RecordingStore(), NoopBodyBattery)
+        runBlocking { engine.sync(1, FixedTimeSource(todayEpochDay = 1000, nowMillis = 1_767_323_045_000L)) }
+
+        val p = command.lastTimePayload
+        assertNotNull(p)
+        assertArrayEquals(
+            byteArrayOf(0x26, 0x01, 0x02, 0x03, 0x04, 0x05, 0x01),
+            p,
+        )
     }
 }

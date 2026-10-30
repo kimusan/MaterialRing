@@ -41,19 +41,33 @@ class RingCommandClient @Inject constructor(
     init {
         scope.launch {
             transport.notifies.collect { raw ->
-                val parsed = codec.decode(raw) ?: return@collect
+                val parsed = codec.decode(raw)
+                if (parsed == null) {
+                    AroDbg.d("decode FAILED ${raw.size}B ${AroDbg.hex(raw)}")
+                    return@collect
+                }
+                AroDbg.d("decode ok $parsed")
                 route(parsed)
             }
         }
     }
 
     override suspend fun request(cmd: Int, payload: ByteArray?, timeoutMs: Long): ParsedFrame? {
-        if (!transport.isConnected) return null
+        if (!transport.isConnected) {
+            AroDbg.d("request 0x${cmd.toString(16)} skipped: not connected")
+            return null
+        }
+        AroDbg.d("request 0x${cmd.toString(16)} payload=${payload?.size ?: 0}B timeout=${timeoutMs}ms")
         val channel = register(cmd)
         try {
             val written = withTimeoutOrNull(timeoutMs) { transport.write(codec.encode(cmd, payload)) } ?: return null
-            if (!written) return null
-            return withTimeoutOrNull(timeoutMs) { channel.receive() }
+            if (!written) {
+                AroDbg.d("request 0x${cmd.toString(16)} write failed")
+                return null
+            }
+            val rsp = withTimeoutOrNull(timeoutMs) { channel.receive() }
+            if (rsp == null) AroDbg.d("request 0x${cmd.toString(16)} TIMEOUT")
+            return rsp
         } finally {
             unregister(cmd, channel)
             channel.close()
@@ -68,13 +82,18 @@ class RingCommandClient @Inject constructor(
         timeoutMs: Long,
     ): List<ParsedFrame> {
         if (!transport.isConnected) return emptyList()
+        AroDbg.d("collectUntil 0x${cmd.toString(16)} max=$maxPackets timeout=${timeoutMs}ms")
         val channel = register(cmd)
         val out = mutableListOf<ParsedFrame>()
         try {
             val written = withTimeoutOrNull(timeoutMs) { transport.write(codec.encode(cmd, payload)) } ?: return emptyList()
             if (!written) return emptyList()
             while (out.size < maxPackets) {
-                val next = withTimeoutOrNull(timeoutMs) { channel.receive() } ?: break
+                val next = withTimeoutOrNull(timeoutMs) { channel.receive() }
+                if (next == null) {
+                    AroDbg.d("collectUntil 0x${cmd.toString(16)} TIMEOUT after ${out.size} packets")
+                    break
+                }
                 out.add(next)
                 if (shouldStop(next)) break
             }
@@ -82,6 +101,7 @@ class RingCommandClient @Inject constructor(
             unregister(cmd, channel)
             channel.close()
         }
+        AroDbg.d("collectUntil 0x${cmd.toString(16)} collected ${out.size}")
         return out
     }
 

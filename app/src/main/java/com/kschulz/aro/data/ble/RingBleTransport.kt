@@ -81,13 +81,18 @@ class RingBleTransport @Inject constructor(
             this.device = device
             reconnectAttempts = 0
             _connectionState.value = ConnectionState.CONNECTING
+            AroDbg.d("connectGatt ${device.address}")
             val g = try {
                 device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             } catch (e: SecurityException) {
+                AroDbg.d("connectGatt SecurityException: ${e.message}")
                 null
             }
             gatt = g
-            if (g == null) _connectionState.value = ConnectionState.DISCONNECTED
+            if (g == null) {
+                AroDbg.d("connectGatt returned null")
+                _connectionState.value = ConnectionState.DISCONNECTED
+            }
         }
     }
 
@@ -144,6 +149,7 @@ class RingBleTransport @Inject constructor(
         val g = gatt
         val char = writeCharacteristic
         if (g == null || char == null || _connectionState.value != ConnectionState.CONNECTED) {
+            AroDbg.d("performWrite rejected: gatt=${g != null} char=${char != null} state=${_connectionState.value}")
             req.result.complete(false)
             return
         }
@@ -154,8 +160,10 @@ class RingBleTransport @Inject constructor(
         } else {
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
+        AroDbg.d("write ${req.frame.bytes.size}B type=$type ${AroDbg.hex(req.frame.bytes)}")
         val status = synchronized(gattLock) { g.writeCharacteristic(char, req.frame.bytes, type) }
         if (status != BluetoothGatt.GATT_SUCCESS) {
+            AroDbg.d("writeCharacteristic queued with status=$status")
             req.result.complete(false)
             return
         }
@@ -196,9 +204,15 @@ class RingBleTransport @Inject constructor(
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            AroDbg.d("onConnectionStateChange status=$status newState=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     _connectionState.value = ConnectionState.CONNECTING
+                    // The vendor SDK requests a 256-byte MTU on connect (Realsil
+                    // BluetoothGattClientImpl). Without it we run at the 23-byte
+                    // default and device->phone history frames arrive as fragments.
+                    AroDbg.d("requestMtu(${REQUESTED_MTU})")
+                    g.requestMtu(REQUESTED_MTU)
                     synchronized(gattLock) { g.discoverServices() }
                 }
 
@@ -211,15 +225,26 @@ class RingBleTransport @Inject constructor(
             }
         }
 
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            AroDbg.d("onMtuChanged mtu=$mtu status=$status")
+        }
+
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            AroDbg.d("onServicesDiscovered status=$status services=${g.services?.size}")
             if (status != BluetoothGatt.GATT_SUCCESS) return
             val service = g.getService(GattUuids.SERIAL_PORT_SERVICE)
             writeCharacteristic = service?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
             notifyCharacteristic = service?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+            AroDbg.d(
+                "serial service=${service != null} writeChar=${writeCharacteristic != null} " +
+                    "notifyChar=${notifyCharacteristic != null} " +
+                    "writeProps=${writeCharacteristic?.properties}",
+            )
             enableNotifications(g)
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            AroDbg.d("onCharacteristicWrite uuid=${characteristic.uuid} status=$status")
             val req = pendingWrite ?: return
             pendingWrite = null
             req.result.complete(status == BluetoothGatt.GATT_SUCCESS)
@@ -236,12 +261,14 @@ class RingBleTransport @Inject constructor(
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            AroDbg.d("onDescriptorWrite uuid=${descriptor.uuid} status=$status")
             // CCCD write landed (either way); the data channel is usable now.
             if (_connectionState.value == ConnectionState.CONNECTING) markConnected()
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             if (characteristic.uuid == GattUuids.NOTIFICATION_CHARACTERISTIC) {
+                AroDbg.d("notify ${value.size}B ${AroDbg.hex(value)}")
                 _notifies.tryEmit(value)
             }
         }
@@ -266,5 +293,7 @@ class RingBleTransport @Inject constructor(
 
     private companion object {
         const val MAX_RECONNECT_ATTEMPTS = 3
+        // Matches the vendor SDK (Realsil BluetoothGattClientImpl requests 0x100).
+        const val REQUESTED_MTU = 256
     }
 }

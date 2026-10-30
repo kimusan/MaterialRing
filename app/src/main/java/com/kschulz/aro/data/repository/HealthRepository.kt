@@ -64,7 +64,7 @@ class HealthRepository @Inject constructor(
     suspend fun stepsFor(profileId: Long, from: Long, to: Long): List<StepDay> =
         steps.observeBetween(profileId, from, to).firstOrNull() ?: emptyList()
 
-    suspend fun upsertSleep(profileId: Long, session: SleepSession, segments: List<SleepSegment>) {
+    override suspend fun upsertSleep(profileId: Long, session: SleepSession, segments: List<SleepSegment>) {
         val id = sleep.upsertSession(session.copy(profileId = profileId))
         if (segments.isNotEmpty()) {
             sleep.deleteSegments(id)

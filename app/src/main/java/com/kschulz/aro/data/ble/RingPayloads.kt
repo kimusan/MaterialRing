@@ -22,6 +22,79 @@ object RingPayloads {
         val stages: List<SleepStage>,
     )
 
+    private const val SECONDS_PER_DAY = 86_400L
+
+    /**
+     * 0x01 CMD_SET_DEVICE_TIME request payload (traced to `SetTimeReq` in the vendor smali).
+     * Seven bytes, all BCD-packed (high nibble / low nibble per digit, `decimalToBCD`), from
+     * the phone's LOCAL calendar, NOT UTC:
+     *   [0] BCD(year % 2000)  [1] BCD(month, 1-12)  [2] BCD(day)
+     *   [3] BCD(hour, 0-23)   [4] BCD(minute)       [5] BCD(second)  [6] language
+     * `language` is the byte the vendor writes from its locale map (0 = zh, 1 = en). The ring
+     * treats this as the time baseline: the vendor's post-bind init chain sends 0x01 first,
+     * before any data query. We send it at the start of sync so the device has a clock before
+     * the 0x46 distribution / history pulls.
+     */
+    fun buildSetTimePayload(
+        year: Int,
+        month: Int,
+        day: Int,
+        hour: Int,
+        minute: Int,
+        second: Int,
+        language: Int = 1,
+    ): ByteArray = byteArrayOf(
+        bcd(year % 2000),
+        bcd(month),
+        bcd(day),
+        bcd(hour),
+        bcd(minute),
+        bcd(second),
+        language.toByte(),
+    )
+
+    /**
+     * Packed BCD, byte-identical to the vendor `decimalToBCD` (`(n/10)<<4 | n%10` then
+     * int-to-byte). Inputs are 0..99 date/time fields, so the result is well-formed BCD.
+     */
+    private fun bcd(value: Int): Byte = (((value / 10) shl 4) or (value % 10)).toByte()
+
+    /**
+     * 0x44 GET_SLEEP main-sleep record (re/PROTOCOL.md 7.4, traced to
+     * `LargeDataHandler.parseDaySleep`). Layout after the codec strips cmd + checksum:
+     *   [0..2) record type (unused here)
+     *   [2..4) length (vendor reads and discards it)
+     *   [4..6) end minutes-since-midnight, 2-byte big-endian
+     *   [6.. )  [stage, durationMin] pairs, one byte each
+     * end = midnight(epochDay) + endMinutes*60; start = end - sum(durationMin)*60. The
+     * duration byte is the one the vendor sums, so it is the second of each pair, not the
+     * first (the doc's `d`/`t` labels have the two reversed).
+     *
+     * Only the first record is decoded: the device can stream several (main sleep + naps)
+     * and `parseDaySleep` walks them recursively, but that framing is unverified against a
+     * live capture, so it is a documented follow-up rather than a guess.
+     */
+    fun parseSleep(payload: ByteArray, epochDay: Long): SleepParse? {
+        if (payload.size < 6) return null
+        val endMinutes = ByteOrder.fromBeBytes(payload, 4, 2)
+        val endEpochSec = epochDay * SECONDS_PER_DAY + endMinutes * 60L
+        val stages = mutableListOf<SleepStage>()
+        var totalMin = 0
+        var i = 6
+        while (i + 1 < payload.size) {
+            stages.add(SleepStage(payload[i].toInt() and 0xFF, payload[i + 1].toInt() and 0xFF))
+            totalMin += payload[i + 1].toInt() and 0xFF
+            i += 2
+        }
+        val startEpochSec = endEpochSec - totalMin * 60L
+        return SleepParse(
+            startEpochMs = startEpochSec * 1000L,
+            endEpochMs = endEpochSec * 1000L,
+            isNap = false,
+            stages = stages,
+        )
+    }
+
     /**
      * 0x48 GET_STEP_TODAY (re/PROTOCOL.md 6.2, big-endian):
      * steps[0..3], runningSteps[4..5], calorie[6..7], walkDistance[9..10], duration[0xC..0xD].
