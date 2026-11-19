@@ -15,8 +15,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -38,12 +41,15 @@ class RingScanner @Inject constructor(
     )
     val discoveries: SharedFlow<ScannedRing> = _discoveries.asSharedFlow()
 
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
     private var scanner: BluetoothLeScanner? = null
 
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val name = result.scanRecord?.deviceName ?: return
-            if (MODEL_PREFIXES.any { name.startsWith(it) }) {
+            val name = result.scanRecord?.deviceName ?: result.device?.name ?: return
+            if (MODEL_PREFIXES.any { name.startsWith(it, ignoreCase = true) }) {
                 val device = result.device
                 _discoveries.tryEmit(
                     ScannedRing(
@@ -53,6 +59,11 @@ class RingScanner @Inject constructor(
                     ),
                 )
             }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            AroDbg.d("onScanFailed errorCode=$errorCode")
+            _isScanning.value = false
         }
     }
 
@@ -64,18 +75,28 @@ class RingScanner @Inject constructor(
 
     fun start() {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
-        scanner = manager.adapter?.let { it.bluetoothLeScanner } ?: return
+        val leScanner = manager.adapter?.bluetoothLeScanner ?: return
+        scanner = leScanner
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
         scope.launch {
-            runCatching { scanner?.startScan(null, settings, callback) }
+            if (_isScanning.value) {
+                runCatching { leScanner.stopScan(callback) }
+            }
+            _isScanning.value = true
+            runCatching { leScanner.startScan(null, settings, callback) }
+                .onFailure { _isScanning.value = false }
         }
     }
 
     fun stop() {
         scope.launch {
-            runCatching { scanner?.stopScan(callback) }
+            val activeScanner = scanner
+            _isScanning.value = false
+            if (activeScanner != null) {
+                runCatching { activeScanner.stopScan(callback) }
+            }
         }
     }
 

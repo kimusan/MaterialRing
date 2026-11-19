@@ -39,13 +39,13 @@ class DeviceViewModel @Inject constructor(
     private val time: TimeSource,
 ) : ViewModel() {
 
-    val bluetoothAvailable: Boolean = scanner.isAvailable
+    val bluetoothAvailable: Boolean
+        get() = scanner.isAvailable
 
-    val discovered: StateFlow<List<ScannedRing>> = scanner.discoveries
-        .scan(emptyList<ScannedRing>()) { list, ring ->
-            (list + ring).distinctBy { it.macAddress }.takeLast(50)
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val isScanning: StateFlow<Boolean> = scanner.isScanning
+
+    private val _discovered = MutableStateFlow<List<ScannedRing>>(emptyList())
+    val discovered: StateFlow<List<ScannedRing>> = _discovered.asStateFlow()
 
     val boundDevices: StateFlow<List<Ring>> = devices.observeAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -55,13 +55,47 @@ class DeviceViewModel @Inject constructor(
     private val _status = MutableStateFlow<String?>(null)
     val status: StateFlow<String?> = _status.asStateFlow()
 
+    init {
+        viewModelScope.launch {
+            scanner.discoveries.collect { ring ->
+                val updated = (_discovered.value.filterNot { it.macAddress == ring.macAddress } + ring)
+                    .sortedByDescending { it.rssi }
+                    .take(50)
+                _discovered.value = updated
+            }
+        }
+    }
+
+    fun onPermissionsGranted() {
+        viewModelScope.launch {
+            val currentBound = devices.observeAll().first()
+            if (currentBound.isEmpty()) {
+                startScanning()
+            } else if (!transport.isConnected && transport.connectionState.value == ConnectionState.DISCONNECTED) {
+                val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                val remote = manager?.adapter?.getRemoteDevice(currentBound.first().macAddress)
+                if (remote != null) {
+                    transport.connect(remote)
+                }
+            }
+        }
+    }
+
     fun startScanning() {
+        if (!BlePermissions.hasAllPermissions(context)) {
+            _status.value = "Bluetooth permission required to scan."
+            return
+        }
+        _discovered.value = emptyList()
         _status.value = "Scanning..."
         scanner.start()
     }
 
     fun stopScanning() {
         scanner.stop()
+        if (_status.value == "Scanning...") {
+            _status.value = null
+        }
     }
 
     fun connect(mac: String, name: String) {
