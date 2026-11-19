@@ -162,6 +162,6 @@ class DeviceViewModel @Inject constructor(
     }
 
     companion object {
-        private const val CONNECT_TIMEOUT_MS = 12_000L
+        private const val CONNECT_TIMEOUT_MS = 30_000L
     }
 }

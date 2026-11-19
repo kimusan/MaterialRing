@@ -109,24 +109,28 @@ class RingBleTransport @Inject constructor(
         synchronized(gattLock) {
             reconnectJob?.cancel()
             reconnectJob = null
-            closeGattLocked()
-            this.device = device
-            _activeMac.value = device.address
             reconnectAttempts = 0
-            _connectionState.value = ConnectionState.CONNECTING
-            AroDbg.d("connectGatt ${device.address}")
-            val g = try {
-                device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-            } catch (e: SecurityException) {
-                AroDbg.d("connectGatt SecurityException: ${e.message}")
-                null
-            }
-            gatt = g
-            if (g == null) {
-                AroDbg.d("connectGatt returned null")
-                _activeMac.value = null
-                _connectionState.value = ConnectionState.DISCONNECTED
-            }
+            openGattLocked(device)
+        }
+    }
+
+    private fun openGattLocked(device: BluetoothDevice) {
+        closeGattLocked()
+        this.device = device
+        _activeMac.value = device.address
+        _connectionState.value = ConnectionState.CONNECTING
+        AroDbg.d("connectGatt ${device.address} (attempt ${reconnectAttempts + 1})")
+        val g = try {
+            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: SecurityException) {
+            AroDbg.d("connectGatt SecurityException: ${e.message}")
+            null
+        }
+        gatt = g
+        if (g == null) {
+            AroDbg.d("connectGatt returned null")
+            _activeMac.value = null
+            _connectionState.value = ConnectionState.DISCONNECTED
         }
     }
 
@@ -260,18 +264,28 @@ class RingBleTransport @Inject constructor(
         pendingRead = null
     }
 
-    private fun scheduleReconnect() {
-        val d = synchronized(gattLock) { device } ?: return
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
+    private fun refreshDeviceCache(g: BluetoothGatt) {
+        runCatching {
+            val method = g.javaClass.getMethod("refresh")
+            val ok = method.invoke(g) as? Boolean
+            AroDbg.d("refreshDeviceCache -> $ok")
+        }
+    }
+
+    private fun scheduleReconnect(): Boolean {
+        val d = synchronized(gattLock) { device } ?: return false
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return false
         val attempt = ++reconnectAttempts
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            delay(1500L shl (attempt - 1))
-            val currentDevice = synchronized(gattLock) { device }
-            if (currentDevice === d && _connectionState.value == ConnectionState.DISCONNECTED) {
-                connect(d)
+            delay(1000L * attempt)
+            synchronized(gattLock) {
+                if (device === d && gatt == null) {
+                    openGattLocked(d)
+                }
             }
         }
+        return true
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -304,11 +318,16 @@ class RingBleTransport @Inject constructor(
                     val shouldRetry = synchronized(gattLock) {
                         if (g !== gatt) return
                         val hasTargetDevice = device != null
+                        val isError = status != BluetoothGatt.GATT_SUCCESS
+                        if (isError) refreshDeviceCache(g)
                         closeGattLocked()
-                        hasTargetDevice && status != BluetoothGatt.GATT_SUCCESS
+                        hasTargetDevice && isError
                     }
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    if (shouldRetry) scheduleReconnect()
+                    if (shouldRetry && scheduleReconnect()) {
+                        _connectionState.value = ConnectionState.CONNECTING
+                    } else {
+                        _connectionState.value = ConnectionState.DISCONNECTED
+                    }
                 }
             }
         }
