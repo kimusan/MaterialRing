@@ -175,6 +175,7 @@ class HomeViewModel @Inject constructor(
                     0x02 -> engine.syncAutoBp(profileId, time, activeProfile.value)
                     0x03 -> engine.syncAutoSpo2(profileId, time)
                 }
+                com.kschulz.aro.widget.AroWidgets.updateAll(context)
             }
         }
     }
@@ -552,6 +553,7 @@ class HomeViewModel @Inject constructor(
                 )
                 if (result.connected) {
                     runCatching { healthConnect.write(profileId, days = 7) }
+                    com.kschulz.aro.widget.AroWidgets.updateAll(context)
                 }
                 _lastSync.value = if (result.connected) {
                     val clock = time.localClock()

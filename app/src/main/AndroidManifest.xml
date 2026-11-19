@@ -65,6 +65,54 @@
                 <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
             </intent-filter>
         </activity-alias>
+
+        <receiver
+            android:name=".widget.TodaySummaryWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_today_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_today_summary_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.WeeklyStepsWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_weekly_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_weekly_steps_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.VitalsSleepWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_vitals_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_vitals_sleep_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.MonthlyTrendWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_monthly_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_monthly_trend_info" />
+        </receiver>
     </application>
 
 </manifest>

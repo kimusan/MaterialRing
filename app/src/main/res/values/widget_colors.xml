@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="widget_surface">#F5F8FC</color>
+    <color name="widget_surface_variant">#E8EFF7</color>
+    <color name="widget_text_primary">#111827</color>
+    <color name="widget_text_secondary">#526071</color>
+    <color name="widget_grid">#D5DFEC</color>
+    <color name="widget_accent_steps">#0097A7</color>
+    <color name="widget_accent_hr">#D81B60</color>
+    <color name="widget_accent_bp">#5E35B1</color>
+    <color name="widget_accent_spo2">#00838F</color>
+    <color name="widget_accent_battery">#1565C0</color>
+    <color name="widget_accent_sleep">#4527A0</color>
+</resources>

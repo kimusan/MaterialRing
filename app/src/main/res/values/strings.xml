@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Aro</string>
+    <string name="widget_today_label">Aro • Today (Numbers)</string>
+    <string name="widget_today_desc">Daily steps, heart rate, SpO2, and body battery at a glance.</string>
+    <string name="widget_weekly_label">Aro • Weekly Steps (Graph)</string>
+    <string name="widget_weekly_desc">7-day steps bar graph with daily goal line and weekly total.</string>
+    <string name="widget_vitals_label">Aro • Sleep &amp; Vitals</string>
+    <string name="widget_vitals_desc">Last night\'s sleep stage breakdown plus heart rate, blood pressure, and SpO2.</string>
+    <string name="widget_monthly_label">Aro • Monthly Activity (Graph)</string>
+    <string name="widget_monthly_desc">30-day activity trend chart with monthly total, daily average, and best day.</string>
 </resources>
