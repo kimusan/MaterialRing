@@ -154,7 +154,7 @@ class HomeViewModel @Inject constructor(
             transport.connectionState.collect { state ->
                 if (state == ConnectionState.CONNECTED) {
                     if (battery.value < 0) {
-                        command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+                        command.refreshBattery()
                     }
                     if (_lastSync.value == null && !_syncing.value) {
                         syncNow()
@@ -238,10 +238,19 @@ class HomeViewModel @Inject constructor(
         measurementJob = null
         if (current.active) {
             viewModelScope.launch {
-                command.send(
-                    Opcodes.STOP_HEART_RATE,
-                    RingPayloads.buildStopMeasurementPayload(current.type, 0, 0),
-                )
+                if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
+                    command.send(
+                        com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
+                        com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(
+                            com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_STOP,
+                        ),
+                    )
+                } else {
+                    command.send(
+                        Opcodes.STOP_HEART_RATE,
+                        RingPayloads.buildStopMeasurementPayload(current.type, 0, 0),
+                    )
+                }
             }
         }
         _measurement.value = LiveMeasurementState()
@@ -331,10 +340,21 @@ class HomeViewModel @Inject constructor(
                 }
             }
 
-            command.send(
-                Opcodes.START_HEART_RATE,
-                RingPayloads.buildStartMeasurementPayload(type),
-            )
+            if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
+                val mode = when (type) {
+                    RingPayloads.MEASURE_TYPE_SPO2 -> com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_SPO2
+                    else -> com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_BP_STRESS
+                }
+                command.send(
+                    com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
+                    com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(mode),
+                )
+            } else {
+                command.send(
+                    Opcodes.START_HEART_RATE,
+                    RingPayloads.buildStartMeasurementPayload(type),
+                )
+            }
 
             try {
                 for (sec in MEASURE_DURATION_SECONDS downTo 1) {
@@ -536,7 +556,7 @@ class HomeViewModel @Inject constructor(
                         return@launch
                     }
                 }
-                command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+                command.refreshBattery()
                 val currentProfile = profiles.getById(profileId)
                 val metric = settings.observeUseMetric().first()
                 val hrInterval = settings.observeAutoHrInterval().first()

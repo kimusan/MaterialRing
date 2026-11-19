@@ -59,6 +59,9 @@ class RingBleTransport @Inject constructor(
     private val _activeMac = MutableStateFlow<String?>(null)
     val activeMac: StateFlow<String?> = _activeMac.asStateFlow()
 
+    private val _activeProtocol = MutableStateFlow(RingProtocol.OUDMON)
+    val activeProtocol: StateFlow<RingProtocol> = _activeProtocol.asStateFlow()
+
     // Raw device notifications. DROP_OLDEST keeps the GATT callback thread from ever
     // blocking on a slow consumer.
     private val _notifies = MutableSharedFlow<ByteArray>(
@@ -169,7 +172,21 @@ class RingBleTransport @Inject constructor(
         return hw to fw
     }
 
-    private suspend fun readCharacteristic(char: BluetoothGattCharacteristic): String? {
+    /** Read standard BLE Battery Service (0x180F / 0x2A19) level 0..100, used by SMART_RING / JRing. */
+    suspend fun readStandardBatteryLevel(): Int? {
+        val batteryChar = synchronized(gattLock) {
+            gatt?.getService(GattUuids.BATTERY_SERVICE)
+                ?.getCharacteristic(GattUuids.BATTERY_LEVEL_CHARACTERISTIC)
+        } ?: return null
+        val raw = readCharacteristicBytes(batteryChar) ?: return null
+        if (raw.isEmpty()) return null
+        return (raw[0].toInt() and 0xFF).takeIf { it in 0..100 }
+    }
+
+    private suspend fun readCharacteristic(char: BluetoothGattCharacteristic): String? =
+        readCharacteristicBytes(char)?.let { String(it, Charsets.ISO_8859_1).trim().ifEmpty { null } }
+
+    private suspend fun readCharacteristicBytes(char: BluetoothGattCharacteristic): ByteArray? {
         val result = CompletableDeferred<ByteArray>()
         val started = synchronized(gattLock) {
             if (pendingRead != null) return null
@@ -192,7 +209,7 @@ class RingBleTransport @Inject constructor(
         synchronized(gattLock) {
             if (pendingRead?.result === result) pendingRead = null
         }
-        return value?.let { String(it, Charsets.ISO_8859_1).trim().ifEmpty { null } }
+        return value
     }
 
     private fun performWrite(req: WriteRequest) {
@@ -350,20 +367,44 @@ class RingBleTransport @Inject constructor(
             }
             val cmdService = g.getService(GattUuids.COMMAND_SERVICE)
             val serialService = g.getService(GattUuids.SERIAL_PORT_SERVICE)
-            val wChar = cmdService?.getCharacteristic(GattUuids.COMMAND_WRITE_CHARACTERISTIC)
-                ?: serialService?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
-            val nChar = cmdService?.getCharacteristic(GattUuids.COMMAND_NOTIFY_CHARACTERISTIC)
-                ?: serialService?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
-            val secWrite = if (cmdService != null) {
-                serialService?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
+            val jringService = g.getService(GattUuids.JRING_SERVICE)
+
+            val detectedProtocol: RingProtocol
+            val wChar: BluetoothGattCharacteristic?
+            val nChar: BluetoothGattCharacteristic?
+            val secWrite: BluetoothGattCharacteristic?
+            val secNotify: BluetoothGattCharacteristic?
+
+            if (cmdService != null || serialService != null) {
+                detectedProtocol = RingProtocol.OUDMON
+                wChar = cmdService?.getCharacteristic(GattUuids.COMMAND_WRITE_CHARACTERISTIC)
+                    ?: serialService?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
+                nChar = cmdService?.getCharacteristic(GattUuids.COMMAND_NOTIFY_CHARACTERISTIC)
+                    ?: serialService?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+                secWrite = if (cmdService != null) {
+                    serialService?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
+                } else {
+                    null
+                }
+                secNotify = if (cmdService != null) {
+                    serialService?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+                } else {
+                    null
+                }
+            } else if (jringService != null) {
+                detectedProtocol = RingProtocol.JRING
+                wChar = jringService.getCharacteristic(GattUuids.JRING_WRITE_CHARACTERISTIC)
+                nChar = jringService.getCharacteristic(GattUuids.JRING_NOTIFY_CHARACTERISTIC)
+                secWrite = null
+                secNotify = null
             } else {
-                null
+                detectedProtocol = RingProtocol.OUDMON
+                wChar = null
+                nChar = null
+                secWrite = null
+                secNotify = null
             }
-            val secNotify = if (cmdService != null) {
-                serialService?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
-            } else {
-                null
-            }
+
             synchronized(gattLock) {
                 writeCharacteristic = wChar
                 notifyCharacteristic = nChar
@@ -371,16 +412,28 @@ class RingBleTransport @Inject constructor(
                 secondaryNotifyCharacteristic = secNotify
                 secondaryNotifyEnabled = false
             }
+            _activeProtocol.value = detectedProtocol
             AroDbg.d(
-                "cmdService=${cmdService != null} serialService=${serialService != null} " +
-                    "writeChar=${wChar?.uuid} notifyChar=${nChar?.uuid} " +
-                    "writeProps=${wChar?.properties}",
+                "protocol=$detectedProtocol cmdService=${cmdService != null} " +
+                    "serialService=${serialService != null} jringService=${jringService != null} " +
+                    "writeChar=${wChar?.uuid} notifyChar=${nChar?.uuid}",
             )
             if (wChar == null || nChar == null) {
                 disconnect()
                 return
             }
-            enableNotifications(g, nChar)
+            if (detectedProtocol == RingProtocol.JRING) {
+                // Matches JRing BluetoothLeService discoveryServicesDelayRunnable (500ms).
+                scope.launch {
+                    delay(500L)
+                    synchronized(gattLock) {
+                        if (g !== gatt) return@launch
+                    }
+                    enableNotifications(g, nChar)
+                }
+            } else {
+                enableNotifications(g, nChar)
+            }
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {

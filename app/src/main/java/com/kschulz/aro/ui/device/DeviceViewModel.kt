@@ -141,20 +141,26 @@ class DeviceViewModel @Inject constructor(
         // Bind first so the row exists before updating HW/FW revisions.
         devices.bind(mac, name, time.nowMillis())
 
-        // Send 0x01 SET_DEVICE_TIME with 7-byte packed-BCD local calendar payload.
-        val clock = time.localClock()
-        val timePayload = RingPayloads.buildSetTimePayload(
-            clock.year,
-            clock.month,
-            clock.day,
-            clock.hour,
-            clock.minute,
-            clock.second,
-        )
-        command.request(Opcodes.SET_DEVICE_TIME, timePayload)
-
-        // Query initial battery level (0x03) and DEVICE_INFO revisions.
-        command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+        // Baseline device clock and battery according to detected ring protocol.
+        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
+            command.request(
+                com.kschulz.aro.data.ble.JRingProtocol.CMD_SET_TIME,
+                com.kschulz.aro.data.ble.JRingProtocol.buildSetTimePayload(time.nowMillis()),
+            )
+            command.refreshBattery()
+        } else {
+            val clock = time.localClock()
+            val timePayload = RingPayloads.buildSetTimePayload(
+                clock.year,
+                clock.month,
+                clock.day,
+                clock.hour,
+                clock.minute,
+                clock.second,
+            )
+            command.request(Opcodes.SET_DEVICE_TIME, timePayload)
+            command.refreshBattery()
+        }
         transport.readDeviceInfo()?.let { (hw, fw) ->
             devices.updateRevisions(mac, hw, fw)
         }

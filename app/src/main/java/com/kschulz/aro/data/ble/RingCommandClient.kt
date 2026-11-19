@@ -42,6 +42,12 @@ class RingCommandClient @Inject constructor(
     )
     val liveMeasurements: SharedFlow<RingPayloads.LiveMeasurementPacket> = _liveMeasurements.asSharedFlow()
 
+    private val _liveTemperatures = MutableSharedFlow<JRingProtocol.TemperatureReading>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val liveTemperatures: SharedFlow<JRingProtocol.TemperatureReading> = _liveTemperatures.asSharedFlow()
+
     /**
      * Autonomous ring-to-app refresh notifications (`0x73` `CMD_DEVICE_NOTIFY`):
      * `0x01` = HR updated, `0x02` = BP updated, `0x03` = SpO2 updated, `0x04` = Steps updated.
@@ -58,12 +64,29 @@ class RingCommandClient @Inject constructor(
     override val isConnected: Boolean
         get() = transport.isConnected
 
+    override val activeProtocol: RingProtocol
+        get() = transport.activeProtocol.value
+
+    val activeProtocolFlow: StateFlow<RingProtocol>
+        get() = transport.activeProtocol
+
     private var largeDataBuffer: ByteArray? = null
     private var largeDataExpectedLen: Int = 0
 
     init {
         scope.launch {
             transport.notifies.collect { raw ->
+                if (activeProtocol == RingProtocol.JRING) {
+                    if (raw.isEmpty()) return@collect
+                    val parsed = ParsedFrame(
+                        cmd = raw[0].toInt() and 0xFF,
+                        error = false,
+                        payload = if (raw.size > 1) raw.copyOfRange(1, raw.size) else ByteArray(0),
+                    )
+                    AroDbg.d("jring rx cmd=0x${parsed.cmd.toString(16)} ${AroDbg.hex(raw)}")
+                    routeJRing(parsed)
+                    return@collect
+                }
                 val fullFrame = reassembleIfLargeData(raw) ?: return@collect
                 val parsed = codec.decode(fullFrame)
                 if (parsed == null) {
@@ -122,12 +145,32 @@ class RingCommandClient @Inject constructor(
         return raw
     }
 
+    private fun encodeFrame(cmd: Int, payload: ByteArray?): Frame =
+        if (activeProtocol == RingProtocol.JRING) {
+            JRingProtocol.buildFrame(cmd, payload)
+        } else {
+            codec.encode(cmd, payload)
+        }
+
+    /** Refresh battery level for either protocol (0x03 on Oudmon, 0x2A19 on JRing). */
+    suspend fun refreshBattery(): Int? {
+        if (!transport.isConnected) return null
+        return if (activeProtocol == RingProtocol.JRING) {
+            val pct = transport.readStandardBatteryLevel()
+            if (pct != null) _batteryLevel.value = pct
+            pct
+        } else {
+            request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+            _batteryLevel.value.takeIf { it in 0..100 }
+        }
+    }
+
     /** Write a command frame without waiting for a correlated response packet. */
     suspend fun send(cmd: Int, payload: ByteArray? = null, timeoutMs: Long = 3_000L): Boolean {
         if (!transport.isConnected) return false
-        AroDbg.d("send 0x${cmd.toString(16)} payload=${payload?.size ?: 0}B")
+        AroDbg.d("send 0x${cmd.toString(16)} payload=${payload?.size ?: 0}B protocol=$activeProtocol")
         return withTimeoutOrNull(timeoutMs) {
-            transport.write(codec.encode(cmd, payload))
+            transport.write(encodeFrame(cmd, payload))
         } == true
     }
 
@@ -139,7 +182,7 @@ class RingCommandClient @Inject constructor(
         AroDbg.d("request 0x${cmd.toString(16)} payload=${payload?.size ?: 0}B timeout=${timeoutMs}ms")
         val channel = register(cmd)
         try {
-            val written = withTimeoutOrNull(timeoutMs) { transport.write(codec.encode(cmd, payload)) } ?: return null
+            val written = withTimeoutOrNull(timeoutMs) { transport.write(encodeFrame(cmd, payload)) } ?: return null
             if (!written) {
                 AroDbg.d("request 0x${cmd.toString(16)} write failed")
                 return null
@@ -167,7 +210,7 @@ class RingCommandClient @Inject constructor(
         val channel = register(cmd)
         val out = mutableListOf<ParsedFrame>()
         try {
-            val written = withTimeoutOrNull(timeoutMs) { transport.write(codec.encode(cmd, payload)) } ?: return emptyList()
+            val written = withTimeoutOrNull(timeoutMs) { transport.write(encodeFrame(cmd, payload)) } ?: return emptyList()
             if (!written) return emptyList()
             while (out.size < maxPackets) {
                 val next = withTimeoutOrNull(timeoutMs) {
@@ -209,6 +252,31 @@ class RingCommandClient @Inject constructor(
         for (channel in toClose) {
             channel.close()
         }
+    }
+
+    private fun routeJRing(parsed: ParsedFrame) {
+        when (parsed.cmd) {
+            JRingProtocol.CMD_LIVE_PULSE -> {
+                JRingProtocol.parseLivePulse(parsed.payload)?.let { bpm ->
+                    _realTimeHeartRate.value = bpm
+                    _liveMeasurements.tryEmit(
+                        RingPayloads.LiveMeasurementPacket(
+                            type = 0, // matches any active measurement collector
+                            errCode = 0,
+                            value = bpm,
+                        ),
+                    )
+                }
+            }
+
+            JRingProtocol.CMD_TEMP_RESULT -> {
+                JRingProtocol.parseTemperatureResult(parsed.payload)?.let { temp ->
+                    _liveTemperatures.tryEmit(temp)
+                }
+            }
+        }
+        val list = synchronized(lock) { waiters[parsed.cmd]?.toList() } ?: return
+        for (channel in list) channel.trySend(parsed)
     }
 
     private fun route(parsed: ParsedFrame) {

@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 interface RingCommand {
     val connectionState: StateFlow<ConnectionState>
     val isConnected: Boolean
+    val activeProtocol: RingProtocol get() = RingProtocol.OUDMON
 
     /** Single-request round trip: write the frame, await the matching response. */
     suspend fun request(cmd: Int, payload: ByteArray? = null, timeoutMs: Long = 5000): ParsedFrame?

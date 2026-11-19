@@ -48,6 +48,14 @@ class SyncEngine @Inject constructor(
         spo2IntervalMinutes: Int = 60,
     ): SyncResult {
         if (!command.isConnected) return SyncResult(connected = false)
+        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
+            return syncJRing(
+                profileId = profileId,
+                time = time,
+                profile = profile,
+                hrIntervalMinutes = hrIntervalMinutes,
+            )
+        }
 
         // The vendor's post-bind init chain sends SET_DEVICE_TIME (0x01) first, before any
         // data query; the ring answers history pulls only once it has a clock. Do the same
@@ -203,6 +211,17 @@ class SyncEngine @Inject constructor(
         spo2IntervalMinutes: Int,
     ) {
         if (!command.isConnected) return
+        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
+            command.request(
+                com.kschulz.aro.data.ble.JRingProtocol.CMD_AUTO_HR_SCHEDULE,
+                com.kschulz.aro.data.ble.JRingProtocol.buildAutoHrPayload(
+                    enabled = hrIntervalMinutes > 0,
+                    intervalMinutes = hrIntervalMinutes.coerceAtLeast(10),
+                ),
+                timeoutMs = STREAM_TIMEOUT_MS,
+            )
+            return
+        }
 
         val autoHrSwitch = RingPayloads.buildAutoHrSwitchPayload(
             enabled = hrIntervalMinutes > 0,
@@ -221,6 +240,111 @@ class SyncEngine @Inject constructor(
             intervalMinutes = spo2IntervalMinutes.coerceAtLeast(30),
         )
         command.request(Opcodes.AUTO_SPO2_SETTING, autoSpo2Switch)
+    }
+
+    /**
+     * Sync path for JRing / Dialog `SMART_RING` (`0x56FF` / `0x33F3` / `0x33F4` 20-byte frames).
+     */
+    private suspend fun syncJRing(
+        profileId: Long,
+        time: TimeSource,
+        profile: Profile?,
+        hrIntervalMinutes: Int,
+    ): SyncResult {
+        val nowMs = time.nowMillis()
+        val today = time.todayEpochDay()
+
+        // 1. Set foreground state, device clock, user info, step goal, and auto-HR schedule.
+        command.request(
+            com.kschulz.aro.data.ble.JRingProtocol.CMD_APP_STATE,
+            com.kschulz.aro.data.ble.JRingProtocol.buildAppStatePayload(foreground = true),
+            timeoutMs = STREAM_TIMEOUT_MS,
+        )
+        command.request(
+            com.kschulz.aro.data.ble.JRingProtocol.CMD_SET_TIME,
+            com.kschulz.aro.data.ble.JRingProtocol.buildSetTimePayload(nowMs),
+            timeoutMs = STREAM_TIMEOUT_MS,
+        )
+        if (profile != null) {
+            command.request(
+                com.kschulz.aro.data.ble.JRingProtocol.CMD_SET_USER_INFO,
+                com.kschulz.aro.data.ble.JRingProtocol.buildUserInfoPayload(
+                    heightCm = profile.heightCm,
+                    weightKg = profile.weightKg,
+                    age = profile.age(time.localClock().year),
+                    gender = profile.gender,
+                ),
+                timeoutMs = STREAM_TIMEOUT_MS,
+            )
+            command.request(
+                com.kschulz.aro.data.ble.JRingProtocol.CMD_SET_GOAL,
+                com.kschulz.aro.data.ble.JRingProtocol.buildGoalPayload(profile.goalSteps),
+                timeoutMs = STREAM_TIMEOUT_MS,
+            )
+        }
+        command.request(
+            com.kschulz.aro.data.ble.JRingProtocol.CMD_AUTO_HR_SCHEDULE,
+            com.kschulz.aro.data.ble.JRingProtocol.buildAutoHrPayload(
+                enabled = hrIntervalMinutes > 0,
+                intervalMinutes = hrIntervalMinutes.coerceAtLeast(10),
+            ),
+            timeoutMs = STREAM_TIMEOUT_MS,
+        )
+
+        var stepsCount = 0
+        var hrCount = 0
+        val days = (0..6).toList()
+
+        // 2. Pull recent HR history (0x16) and daily activity (0x10) for the last 7 days.
+        for (daysAgo in days) {
+            val hrFrames = command.collectUntil(
+                cmd = com.kschulz.aro.data.ble.JRingProtocol.CMD_GET_HR_HISTORY,
+                payload = com.kschulz.aro.data.ble.JRingProtocol.buildDayQueryPayload(daysAgo),
+                shouldStop = { frame ->
+                    val tag = frame.payload.getOrNull(0)?.toInt()?.and(0xFF)
+                    tag == 0xFF
+                },
+                maxPackets = 32,
+                timeoutMs = 1_500L,
+            )
+            val parsedHr = hrFrames.flatMap {
+                com.kschulz.aro.data.ble.JRingProtocol.parseHrHistoryPayload(profileId, it.payload)
+            }
+            if (parsedHr.isNotEmpty()) {
+                health.upsertHeartRate(profileId, parsedHr)
+                hrCount += parsedHr.size
+            }
+
+            if (daysAgo == 0) {
+                val sportRsp = command.request(
+                    com.kschulz.aro.data.ble.JRingProtocol.CMD_GET_DATA_BY_DAY,
+                    com.kschulz.aro.data.ble.JRingProtocol.buildDayQueryPayload(0),
+                    timeoutMs = 1_500L,
+                )
+                sportRsp?.let {
+                    com.kschulz.aro.data.ble.JRingProtocol.parseCurrentSportPayload(profileId, today, it.payload)
+                        ?.let { stepDay ->
+                            health.upsertSteps(profileId, listOf(stepDay))
+                            stepsCount += 1
+                        }
+                }
+            }
+        }
+
+        // 3. Recompute Body Battery up to current hour.
+        val windowStartHour = time.epochDayForOffset(6) * 24
+        val nowHour = nowMs / 3_600_000L
+        val windowEndHour = minOf(today * 24 + 23, nowHour)
+        runCatching { bodyBattery.recompute(profileId, windowStartHour, windowEndHour) }
+
+        AroDbg.d("jring sync done: steps=$stepsCount hr=$hrCount")
+        return SyncResult(
+            connected = true,
+            daysSynced = days.size,
+            steps = stepsCount,
+            hrSamples = hrCount,
+            distributionCleared = true,
+        )
     }
 
     private suspend fun queryDistribution(): Int? {

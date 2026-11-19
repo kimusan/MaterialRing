@@ -108,6 +108,7 @@ class RingScanner @Inject constructor(
             "R01", "R02", "R03", "R04", "R05", "R06", "R11",
             "VK-5098", "MERLIN", "Hello Ring", "RING1", "boAtring",
             "Y25", "H59", "DS1314", "DS520", "DS12",
+            "SMART_RING", "JRing",
         )
     }
 }
