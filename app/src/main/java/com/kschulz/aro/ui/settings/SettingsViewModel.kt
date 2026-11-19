@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kschulz.aro.data.ble.ConnectionState
 import com.kschulz.aro.data.ble.RingBleTransport
+import com.kschulz.aro.data.healthconnect.HealthConnectExporter
 import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.Ring
 import com.kschulz.aro.data.repository.DeviceRepository
@@ -31,8 +32,12 @@ class SettingsViewModel @Inject constructor(
     private val devices: DeviceRepository,
     private val transport: RingBleTransport,
     private val syncEngine: SyncEngine,
+    private val healthConnect: HealthConnectExporter,
     private val time: TimeSource,
 ) : ViewModel() {
+
+    val healthConnectAvailable: Boolean
+        get() = healthConnect.isAvailable()
 
     val allProfiles: StateFlow<List<Profile>> =
         profiles.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -170,9 +175,52 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun setHealthConnect(enabled: Boolean) {
+    fun setHealthConnect(enabled: Boolean, onRequestPermissions: () -> Unit = {}) {
         viewModelScope.launch {
-            settings.setHealthConnectEnabled(enabled)
+            if (!enabled) {
+                settings.setHealthConnectEnabled(false)
+                _message.value = "Google Health Connect disabled"
+                return@launch
+            }
+            if (!healthConnect.isAvailable()) {
+                settings.setHealthConnectEnabled(false)
+                _message.value = "Google Health Connect is not available on this device"
+                return@launch
+            }
+            if (healthConnect.hasAllPermissions()) {
+                settings.setHealthConnectEnabled(true)
+                syncHealthConnectNow()
+            } else {
+                onRequestPermissions()
+            }
+        }
+    }
+
+    fun onHealthConnectPermissionsResult(granted: Set<String>) {
+        viewModelScope.launch {
+            if (granted.isEmpty()) {
+                settings.setHealthConnectEnabled(false)
+                _message.value = "Health Connect permissions were not granted"
+            } else {
+                settings.setHealthConnectEnabled(true)
+                syncHealthConnectNow()
+            }
+        }
+    }
+
+    fun syncHealthConnectNow() {
+        viewModelScope.launch {
+            val pid = settings.observeActiveProfileId().first()
+            if (pid == SettingsRepository.NO_PROFILE) {
+                _message.value = "No active profile to export"
+                return@launch
+            }
+            val written = healthConnect.write(pid, days = 7)
+            _message.value = if (written > 0) {
+                "Exported $written record(s) to Google Health Connect"
+            } else {
+                "Google Health Connect is up to date"
+            }
         }
     }
 

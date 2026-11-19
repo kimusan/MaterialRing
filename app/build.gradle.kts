@@ -66,9 +66,7 @@ dependencies {
     implementation(libs.androidx.hilt.work)
     ksp(libs.androidx.hilt.compiler)
 
-    // Re-enabled in the same commit that adds HealthConnectExporter (the exact
-    // alpha version string is resolved against the live Google Maven index then).
-    // implementation(libs.androidx.health.connect.client)
+    implementation(libs.androidx.health.connect.client)
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)

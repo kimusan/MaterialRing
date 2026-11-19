@@ -34,9 +34,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.health.connect.client.PermissionController
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kschulz.aro.data.ble.ConnectionState
+import com.kschulz.aro.data.healthconnect.HealthConnectExporter
 import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.ui.profile.ProfileEditorDialog
 import com.kschulz.aro.ui.profile.profileSummaryLine
@@ -59,6 +62,11 @@ fun SettingsScreen(
     val autoBpInterval by viewModel.autoBpInterval.collectAsStateWithLifecycle()
     val autoSpo2Interval by viewModel.autoSpo2Interval.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+
+    val healthConnectPermissionLauncher = rememberLauncherForActivityResult(
+        contract = PermissionController.createRequestPermissionResultContract(),
+        onResult = viewModel::onHealthConnectPermissionsResult,
+    )
 
     var editingProfile by remember { mutableStateOf<Profile?>(null) }
     var showProfileDialog by remember { mutableStateOf(false) }
@@ -238,19 +246,42 @@ fun SettingsScreen(
 
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Google Health Connect", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "Opt-in, write-only. Off by default; nothing leaves the device until you turn this on.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Google Health Connect", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                if (viewModel.healthConnectAvailable) {
+                                    "Opt-in, write-only (Steps, Distance, Calories, HR, Sleep, BP, SpO2). Off by default."
+                                } else {
+                                    "Google Health Connect is not installed on this device."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = hcEnabled,
+                            onCheckedChange = { enabled ->
+                                viewModel.setHealthConnect(enabled) {
+                                    healthConnectPermissionLauncher.launch(
+                                        HealthConnectExporter.REQUIRED_PERMISSIONS,
+                                    )
+                                }
+                            },
                         )
                     }
-                    Switch(checked = hcEnabled, onCheckedChange = viewModel::setHealthConnect)
+                    if (hcEnabled) {
+                        TextButton(
+                            onClick = viewModel::syncHealthConnectNow,
+                            modifier = Modifier.padding(top = 4.dp),
+                        ) {
+                            Text("Sync to Health Connect now")
+                        }
+                    }
                 }
             }
         }

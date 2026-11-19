@@ -64,6 +64,7 @@ class HomeViewModel @Inject constructor(
     private val profiles: ProfileRepository,
     private val settings: SettingsRepository,
     private val engine: SyncEngine,
+    private val healthConnect: com.kschulz.aro.data.healthconnect.HealthConnectExporter,
     private val time: TimeSource,
 ) : ViewModel() {
 
@@ -549,6 +550,9 @@ class HomeViewModel @Inject constructor(
                     bpIntervalMinutes = bpInterval,
                     spo2IntervalMinutes = spo2Interval,
                 )
+                if (result.connected) {
+                    runCatching { healthConnect.write(profileId, days = 7) }
+                }
                 _lastSync.value = if (result.connected) {
                     val clock = time.localClock()
                     val hhmm = "%02d:%02d".format(clock.hour, clock.minute)
