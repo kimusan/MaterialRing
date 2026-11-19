@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -13,6 +14,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -44,6 +46,7 @@ class RingBleTransport @Inject constructor(
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
     private var notifyCharacteristic: BluetoothGattCharacteristic? = null
     private var reconnectAttempts = 0
+    private var reconnectJob: Job? = null
     private var pendingWrite: WriteRequest? = null
     private var pendingRead: ReadRequest? = null
 
@@ -65,18 +68,41 @@ class RingBleTransport @Inject constructor(
 
     init {
         // Single writer: Android rejects concurrent GATT writes, so all writes are
-        // serialized through this coroutine.
+        // serialized through this coroutine and awaited until completion or timeout.
         scope.launch {
-            for (req in writeChannel) performWrite(req)
+            for (req in writeChannel) {
+                performWrite(req)
+                val completed = withTimeoutOrNull(WRITE_TIMEOUT_MS) { req.result.await() }
+                if (completed == null) {
+                    synchronized(gattLock) {
+                        if (pendingWrite === req) pendingWrite = null
+                    }
+                    req.result.complete(false)
+                }
+            }
         }
     }
 
     val isConnected: Boolean
         get() = _connectionState.value == ConnectionState.CONNECTED
 
+    /** Resolve a [BluetoothDevice] by MAC address and start a connection session. */
+    fun connect(macAddress: String): Boolean {
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val remote = runCatching { manager?.adapter?.getRemoteDevice(macAddress) }.getOrNull()
+        if (remote == null) {
+            AroDbg.d("connect($macAddress) failed: adapter or remote device unavailable")
+            return false
+        }
+        connect(remote)
+        return true
+    }
+
     /** Connect and start a session. Closes any existing GATT handle first. */
     fun connect(device: BluetoothDevice) {
         synchronized(gattLock) {
+            reconnectJob?.cancel()
+            reconnectJob = null
             closeGattLocked()
             this.device = device
             reconnectAttempts = 0
@@ -96,10 +122,13 @@ class RingBleTransport @Inject constructor(
         }
     }
 
-    /** Close the session. Disables auto-reconnect. */
+    /** Close the session and disable auto-reconnect. */
     fun disconnect() {
         synchronized(gattLock) {
+            reconnectJob?.cancel()
+            reconnectJob = null
             device = null
+            reconnectAttempts = 0
             closeGattLocked()
             _connectionState.value = ConnectionState.DISCONNECTED
         }
@@ -118,7 +147,7 @@ class RingBleTransport @Inject constructor(
      * @return (hw, fw), or null when not connected or either read fails.
      */
     suspend fun readDeviceInfo(): Pair<String, String>? {
-        val g = gatt ?: return null
+        val g = synchronized(gattLock) { gatt } ?: return null
         val service = synchronized(gattLock) { g.getService(GattUuids.DEVICE_INFO_SERVICE) } ?: return null
         val fwChar = service.getCharacteristic(GattUuids.FIRMWARE_REVISION) ?: return null
         val hwChar = service.getCharacteristic(GattUuids.HARDWARE_REVISION) ?: return null
@@ -128,49 +157,66 @@ class RingBleTransport @Inject constructor(
     }
 
     private suspend fun readCharacteristic(char: BluetoothGattCharacteristic): String? {
-        if (pendingRead != null) return null
         val result = CompletableDeferred<ByteArray>()
-        pendingRead = ReadRequest(result)
-        val started = synchronized(gattLock) { gatt?.readCharacteristic(char) == true }
+        val started = synchronized(gattLock) {
+            if (pendingRead != null) return null
+            pendingRead = ReadRequest(result)
+            try {
+                gatt?.readCharacteristic(char) == true
+            } catch (_: SecurityException) {
+                false
+            }
+        }
         if (!started) {
-            pendingRead = null
+            synchronized(gattLock) { pendingRead = null }
             return null
         }
         val value = try {
             withTimeoutOrNull(3000) { result.await() }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
-        if (pendingRead != null) pendingRead = null
+        synchronized(gattLock) {
+            if (pendingRead?.result === result) pendingRead = null
+        }
         return value?.let { String(it, Charsets.ISO_8859_1).trim().ifEmpty { null } }
     }
 
     private fun performWrite(req: WriteRequest) {
-        val g = gatt
-        val char = writeCharacteristic
-        if (g == null || char == null || _connectionState.value != ConnectionState.CONNECTED) {
-            AroDbg.d("performWrite rejected: gatt=${g != null} char=${char != null} state=${_connectionState.value}")
-            req.result.complete(false)
-            return
-        }
-        val noResponse =
-            char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
-        val type = if (noResponse) {
-            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        } else {
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        }
-        AroDbg.d("write ${req.frame.bytes.size}B type=$type ${AroDbg.hex(req.frame.bytes)}")
-        val status = synchronized(gattLock) { g.writeCharacteristic(char, req.frame.bytes, type) }
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            AroDbg.d("writeCharacteristic queued with status=$status")
-            req.result.complete(false)
-            return
-        }
-        if (noResponse) {
-            req.result.complete(true)
-        } else {
-            pendingWrite = req
+        synchronized(gattLock) {
+            val g = gatt
+            val char = writeCharacteristic
+            if (g == null || char == null || _connectionState.value != ConnectionState.CONNECTED) {
+                AroDbg.d("performWrite rejected: gatt=${g != null} char=${char != null} state=${_connectionState.value}")
+                req.result.complete(false)
+                return
+            }
+            val noResponse =
+                char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
+            val type = if (noResponse) {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            } else {
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            }
+            AroDbg.d("write ${req.frame.bytes.size}B type=$type ${AroDbg.hex(req.frame.bytes)}")
+            if (!noResponse) {
+                pendingWrite = req
+            }
+            val status = try {
+                g.writeCharacteristic(char, req.frame.bytes, type)
+            } catch (e: SecurityException) {
+                AroDbg.d("writeCharacteristic SecurityException: ${e.message}")
+                -1
+            }
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                AroDbg.d("writeCharacteristic queued with status=$status")
+                if (!noResponse) pendingWrite = null
+                req.result.complete(false)
+                return
+            }
+            if (noResponse) {
+                req.result.complete(true)
+            }
         }
     }
 
@@ -179,7 +225,8 @@ class RingBleTransport @Inject constructor(
             notifyCharacteristic?.let {
                 try { g.setCharacteristicNotification(it, false) } catch (_: SecurityException) {}
             }
-            g.close()
+            try { g.disconnect() } catch (_: SecurityException) {}
+            try { g.close() } catch (_: SecurityException) {}
         }
         gatt = null
         writeCharacteristic = null
@@ -191,12 +238,14 @@ class RingBleTransport @Inject constructor(
     }
 
     private fun scheduleReconnect() {
-        val d = device ?: return
+        val d = synchronized(gattLock) { device } ?: return
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
         val attempt = ++reconnectAttempts
-        scope.launch {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
             delay(1500L shl (attempt - 1))
-            if (device === d && _connectionState.value == ConnectionState.DISCONNECTED) {
+            val currentDevice = synchronized(gattLock) { device }
+            if (currentDevice === d && _connectionState.value == ConnectionState.DISCONNECTED) {
                 connect(d)
             }
         }
@@ -204,55 +253,97 @@ class RingBleTransport @Inject constructor(
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            synchronized(gattLock) {
+                if (g !== gatt) return
+            }
             AroDbg.d("onConnectionStateChange status=$status newState=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     _connectionState.value = ConnectionState.CONNECTING
                     // The vendor SDK requests a 256-byte MTU on connect (Realsil
-                    // BluetoothGattClientImpl). Without it we run at the 23-byte
-                    // default and device->phone history frames arrive as fragments.
-                    AroDbg.d("requestMtu(${REQUESTED_MTU})")
-                    g.requestMtu(REQUESTED_MTU)
-                    synchronized(gattLock) { g.discoverServices() }
+                    // BluetoothGattClientImpl). Wait for onMtuChanged before calling
+                    // discoverServices so Android does not drop the discovery request.
+                    AroDbg.d("requestMtu($REQUESTED_MTU)")
+                    val mtuStarted = synchronized(gattLock) {
+                        try { g.requestMtu(REQUESTED_MTU) } catch (_: SecurityException) { false }
+                    }
+                    if (!mtuStarted) {
+                        AroDbg.d("requestMtu returned false, falling back to discoverServices")
+                        synchronized(gattLock) {
+                            try { g.discoverServices() } catch (_: SecurityException) {}
+                        }
+                    }
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    val shouldRetry = synchronized(gattLock) {
+                        if (g !== gatt) return
+                        val hasTargetDevice = device != null
+                        closeGattLocked()
+                        hasTargetDevice && status != BluetoothGatt.GATT_SUCCESS
+                    }
                     _connectionState.value = ConnectionState.DISCONNECTED
-                    // GATT_SUCCESS means the peer dropped us cleanly or we asked; only
-                    // retry on genuine failures.
-                    if (status != BluetoothGatt.GATT_SUCCESS) scheduleReconnect()
+                    if (shouldRetry) scheduleReconnect()
                 }
             }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            synchronized(gattLock) {
+                if (g !== gatt) return
+            }
             AroDbg.d("onMtuChanged mtu=$mtu status=$status")
+            synchronized(gattLock) {
+                try { g.discoverServices() } catch (_: SecurityException) {}
+            }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            synchronized(gattLock) {
+                if (g !== gatt) return
+            }
             AroDbg.d("onServicesDiscovered status=$status services=${g.services?.size}")
-            if (status != BluetoothGatt.GATT_SUCCESS) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                disconnect()
+                return
+            }
             val service = g.getService(GattUuids.SERIAL_PORT_SERVICE)
-            writeCharacteristic = service?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
-            notifyCharacteristic = service?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+            val wChar = service?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
+            val nChar = service?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+            synchronized(gattLock) {
+                writeCharacteristic = wChar
+                notifyCharacteristic = nChar
+            }
             AroDbg.d(
-                "serial service=${service != null} writeChar=${writeCharacteristic != null} " +
-                    "notifyChar=${notifyCharacteristic != null} " +
-                    "writeProps=${writeCharacteristic?.properties}",
+                "serial service=${service != null} writeChar=${wChar != null} " +
+                    "notifyChar=${nChar != null} " +
+                    "writeProps=${wChar?.properties}",
             )
-            enableNotifications(g)
+            if (wChar == null || nChar == null) {
+                disconnect()
+                return
+            }
+            enableNotifications(g, nChar)
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            val req = synchronized(gattLock) {
+                if (g !== gatt) return
+                val current = pendingWrite
+                pendingWrite = null
+                current
+            } ?: return
             AroDbg.d("onCharacteristicWrite uuid=${characteristic.uuid} status=$status")
-            val req = pendingWrite ?: return
-            pendingWrite = null
             req.result.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
         override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            val req = pendingRead ?: return
-            pendingRead = null
+            val req = synchronized(gattLock) {
+                if (g !== gatt) return
+                val current = pendingRead
+                pendingRead = null
+                current
+            } ?: return
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 req.result.complete(characteristic.value ?: ByteArray(0))
             } else {
@@ -261,12 +352,18 @@ class RingBleTransport @Inject constructor(
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            synchronized(gattLock) {
+                if (g !== gatt) return
+            }
             AroDbg.d("onDescriptorWrite uuid=${descriptor.uuid} status=$status")
-            // CCCD write landed (either way); the data channel is usable now.
+            // CCCD write landed; the data channel is now ready for command traffic.
             if (_connectionState.value == ConnectionState.CONNECTING) markConnected()
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            synchronized(gattLock) {
+                if (g !== gatt) return
+            }
             if (characteristic.uuid == GattUuids.NOTIFICATION_CHARACTERISTIC) {
                 AroDbg.d("notify ${value.size}B ${AroDbg.hex(value)}")
                 _notifies.tryEmit(value)
@@ -274,16 +371,23 @@ class RingBleTransport @Inject constructor(
         }
     }
 
-    private fun enableNotifications(g: BluetoothGatt) {
-        val notify = notifyCharacteristic
-        if (notify != null) {
+    private fun enableNotifications(g: BluetoothGatt, notify: BluetoothGattCharacteristic) {
+        try {
             g.setCharacteristicNotification(notify, true)
-            notify.getDescriptor(GattUuids.CCCD)?.let { cccd ->
-                cccd.value = byteArrayOf(0x01, 0x00)
-                synchronized(gattLock) { g.writeDescriptor(cccd) }
+        } catch (_: SecurityException) {}
+        val cccd = notify.getDescriptor(GattUuids.CCCD)
+        if (cccd != null) {
+            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            val started = synchronized(gattLock) {
+                try { g.writeDescriptor(cccd) } catch (_: SecurityException) { false }
             }
+            if (!started) {
+                AroDbg.d("writeDescriptor(CCCD) returned false, marking connected immediately")
+                markConnected()
+            }
+        } else {
+            markConnected()
         }
-        markConnected()
     }
 
     private fun markConnected() {
@@ -295,5 +399,6 @@ class RingBleTransport @Inject constructor(
         const val MAX_RECONNECT_ATTEMPTS = 3
         // Matches the vendor SDK (Realsil BluetoothGattClientImpl requests 0x100).
         const val REQUESTED_MTU = 256
+        const val WRITE_TIMEOUT_MS = 3_000L
     }
 }

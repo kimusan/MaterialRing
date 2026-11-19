@@ -1,14 +1,13 @@
 package com.kschulz.aro.ui.device
 
-import android.bluetooth.BluetoothManager
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.kschulz.aro.data.ble.ByteOrder
 import com.kschulz.aro.data.ble.ConnectionState
 import com.kschulz.aro.data.ble.Opcodes
 import com.kschulz.aro.data.ble.RingBleTransport
 import com.kschulz.aro.data.ble.RingCommandClient
+import com.kschulz.aro.data.ble.RingPayloads
 import com.kschulz.aro.data.ble.RingScanner
 import com.kschulz.aro.data.ble.ScannedRing
 import com.kschulz.aro.data.model.Ring
@@ -17,16 +16,17 @@ import com.kschulz.aro.data.sync.TimeSource
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
-/** Scans for rings, connects, runs the first-time baseline (device time + phone OS),
+/** Scans for rings, connects, runs the first-time baseline (7-byte BCD device time),
  *  reads revisions, and binds. Also exposes the bound-device list the app root uses to
  *  decide between the scan screen and the main tabs. */
 @HiltViewModel
@@ -55,6 +55,8 @@ class DeviceViewModel @Inject constructor(
     private val _status = MutableStateFlow<String?>(null)
     val status: StateFlow<String?> = _status.asStateFlow()
 
+    private var connectJob: Job? = null
+
     init {
         viewModelScope.launch {
             scanner.discoveries.collect { ring ->
@@ -62,6 +64,16 @@ class DeviceViewModel @Inject constructor(
                     .sortedByDescending { it.rssi }
                     .take(50)
                 _discovered.value = updated
+            }
+        }
+        // When all bound devices are removed (unbound), ensure any active connection or
+        // stale status is cleared so ScanScreen starts fresh and can rebind immediately.
+        viewModelScope.launch {
+            devices.observeAll().collect { list ->
+                if (list.isEmpty() && connectJob?.isActive != true) {
+                    transport.disconnect()
+                    _status.value = null
+                }
             }
         }
     }
@@ -72,11 +84,7 @@ class DeviceViewModel @Inject constructor(
             if (currentBound.isEmpty()) {
                 startScanning()
             } else if (!transport.isConnected && transport.connectionState.value == ConnectionState.DISCONNECTED) {
-                val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-                val remote = manager?.adapter?.getRemoteDevice(currentBound.first().macAddress)
-                if (remote != null) {
-                    transport.connect(remote)
-                }
+                transport.connect(currentBound.first().macAddress)
             }
         }
     }
@@ -99,42 +107,58 @@ class DeviceViewModel @Inject constructor(
     }
 
     fun connect(mac: String, name: String) {
+        connectJob?.cancel()
         _status.value = "Connecting to $name..."
-        viewModelScope.launch {
-            val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            val device = manager?.adapter?.getRemoteDevice(mac)
-            if (device == null) {
+        connectJob = viewModelScope.launch {
+            if (!transport.connect(mac)) {
                 _status.value = "Bluetooth unavailable"
                 return@launch
             }
-            transport.connect(device)
-            val final = connectionState.first { it != ConnectionState.CONNECTING }
+            val final = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                connectionState.first { it != ConnectionState.CONNECTING }
+            }
             if (final == ConnectionState.CONNECTED) {
                 baseline(mac, name)
             } else {
+                transport.disconnect()
                 _status.value = "Connection failed. Is the ring on and nearby?"
             }
         }
     }
 
     fun disconnect() {
+        connectJob?.cancel()
+        connectJob = null
         transport.disconnect()
         _status.value = null
     }
 
     private suspend fun baseline(mac: String, name: String) {
         _status.value = "Setting up device..."
-        // First-time baseline (PROTOCOL.md section 5): set device time, then phone OS.
-        val nowUtc = (System.currentTimeMillis() / 1000L).toInt()
-        command.request(Opcodes.SET_DEVICE_TIME, ByteOrder.toLeBytes(nowUtc, 4))
-        // 0x04 SET_PHONE_OS: 0x01 = Android.
-        command.request(Opcodes.SET_PHONE_OS, byteArrayOf(0x01))
+        // Bind first so the row exists before updating HW/FW revisions.
+        devices.bind(mac, name, time.nowMillis())
 
-        // Fill revisions from the DEVICE_INFO service, then bind.
+        // Send 0x01 SET_DEVICE_TIME with 7-byte packed-BCD local calendar payload.
+        val clock = time.localClock()
+        val timePayload = RingPayloads.buildSetTimePayload(
+            clock.year,
+            clock.month,
+            clock.day,
+            clock.hour,
+            clock.minute,
+            clock.second,
+        )
+        command.request(Opcodes.SET_DEVICE_TIME, timePayload)
+
+        // Query initial battery level (0x03) and DEVICE_INFO revisions.
+        command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
         transport.readDeviceInfo()?.let { (hw, fw) ->
             devices.updateRevisions(mac, hw, fw)
         }
-        devices.bind(mac, name, time.nowMillis())
         _status.value = "Bound to $name"
+    }
+
+    companion object {
+        private const val CONNECT_TIMEOUT_MS = 12_000L
     }
 }

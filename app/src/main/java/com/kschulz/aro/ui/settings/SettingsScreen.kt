@@ -31,6 +31,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Mod
     val profiles by viewModel.allProfiles.collectAsStateWithLifecycle()
     val activeId by viewModel.activeProfileId.collectAsStateWithLifecycle()
     val devices by viewModel.boundDevices.collectAsStateWithLifecycle()
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val hcEnabled by viewModel.healthConnectEnabled.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
 
@@ -121,19 +122,41 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Mod
                 Text("No bound devices.", style = MaterialTheme.typography.bodyMedium)
             }
             devices.forEach { d ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(d.displayName, style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "HW ${d.hwRevision} / FW ${d.fwRevision}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(d.displayName, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "${d.macAddress}  •  HW ${d.hwRevision.ifEmpty { "—" }} / FW ${d.fwRevision.ifEmpty { "—" }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                when (connectionState) {
+                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTED -> "Connected"
+                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTING -> "Connecting..."
+                                    com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED -> "Disconnected"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = when (connectionState) {
+                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primary
+                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
+                                    com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.error
+                                },
+                            )
+                        }
+                        if (connectionState == com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED) {
+                            TextButton(onClick = { viewModel.reconnect(d.macAddress) }) {
+                                Text("Reconnect")
+                            }
+                        }
+                        TextButton(onClick = { viewModel.unbind(d.macAddress) }) {
+                            Text("Unbind")
+                        }
                     }
-                    TextButton(onClick = { viewModel.unbind(d.macAddress) }) { Text("Unbind") }
                 }
             }
         }

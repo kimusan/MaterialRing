@@ -2,6 +2,8 @@ package com.kschulz.aro.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kschulz.aro.data.ble.ConnectionState
+import com.kschulz.aro.data.ble.RingBleTransport
 import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.Ring
 import com.kschulz.aro.data.repository.DeviceRepository
@@ -14,8 +16,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Profiles (add / switch / rename / delete, instant), the opt-in Health Connect toggle,
  *  and bound-device info. No cloud: everything here is local. */
@@ -24,6 +28,7 @@ class SettingsViewModel @Inject constructor(
     private val profiles: ProfileRepository,
     private val settings: SettingsRepository,
     private val devices: DeviceRepository,
+    private val transport: RingBleTransport,
     private val time: TimeSource,
 ) : ViewModel() {
 
@@ -35,6 +40,8 @@ class SettingsViewModel @Inject constructor(
 
     val boundDevices: StateFlow<List<Ring>> =
         devices.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val connectionState: StateFlow<ConnectionState> = transport.connectionState
 
     val healthConnectEnabled: StateFlow<Boolean> =
         settings.observeHealthConnectEnabled().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
@@ -79,8 +86,30 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun reconnect(mac: String) {
+        viewModelScope.launch {
+            _message.value = "Reconnecting..."
+            if (!transport.connect(mac)) {
+                _message.value = "Bluetooth unavailable"
+                return@launch
+            }
+            val result = withTimeoutOrNull(10_000L) {
+                transport.connectionState.first { it != ConnectionState.CONNECTING }
+            }
+            _message.value = if (result == ConnectionState.CONNECTED) {
+                "Connected"
+            } else {
+                transport.disconnect()
+                "Could not connect. Is the ring nearby?"
+            }
+        }
+    }
+
     fun unbind(mac: String) {
         viewModelScope.launch {
+            // Tear down active BLE GATT session first so the ring resumes advertising
+            // and any in-flight sync commands abort immediately.
+            transport.disconnect()
             devices.unbind(mac)
             _message.value = "Device unbound"
         }

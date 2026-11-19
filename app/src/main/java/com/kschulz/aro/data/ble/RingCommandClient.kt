@@ -50,6 +50,17 @@ class RingCommandClient @Inject constructor(
                 route(parsed)
             }
         }
+        scope.launch {
+            transport.connectionState.collect { state ->
+                if (state != ConnectionState.CONNECTED) {
+                    _realTimeHeartRate.value = 0
+                    if (state == ConnectionState.DISCONNECTED) {
+                        _batteryLevel.value = -1
+                    }
+                    cancelAllWaiters()
+                }
+            }
+        }
     }
 
     override suspend fun request(cmd: Int, payload: ByteArray?, timeoutMs: Long): ParsedFrame? {
@@ -65,8 +76,10 @@ class RingCommandClient @Inject constructor(
                 AroDbg.d("request 0x${cmd.toString(16)} write failed")
                 return null
             }
-            val rsp = withTimeoutOrNull(timeoutMs) { channel.receive() }
-            if (rsp == null) AroDbg.d("request 0x${cmd.toString(16)} TIMEOUT")
+            val rsp = withTimeoutOrNull(timeoutMs) {
+                runCatching { channel.receive() }.getOrNull()
+            }
+            if (rsp == null) AroDbg.d("request 0x${cmd.toString(16)} TIMEOUT or disconnected")
             return rsp
         } finally {
             unregister(cmd, channel)
@@ -89,9 +102,11 @@ class RingCommandClient @Inject constructor(
             val written = withTimeoutOrNull(timeoutMs) { transport.write(codec.encode(cmd, payload)) } ?: return emptyList()
             if (!written) return emptyList()
             while (out.size < maxPackets) {
-                val next = withTimeoutOrNull(timeoutMs) { channel.receive() }
+                val next = withTimeoutOrNull(timeoutMs) {
+                    runCatching { channel.receive() }.getOrNull()
+                }
                 if (next == null) {
-                    AroDbg.d("collectUntil 0x${cmd.toString(16)} TIMEOUT after ${out.size} packets")
+                    AroDbg.d("collectUntil 0x${cmd.toString(16)} TIMEOUT/closed after ${out.size} packets")
                     break
                 }
                 out.add(next)
@@ -117,6 +132,17 @@ class RingCommandClient @Inject constructor(
         synchronized(lock) { waiters[cmd]?.remove(channel) }
     }
 
+    private fun cancelAllWaiters() {
+        val toClose = synchronized(lock) {
+            val all = waiters.values.flatten()
+            waiters.clear()
+            all
+        }
+        for (channel in toClose) {
+            channel.close()
+        }
+    }
+
     private fun route(parsed: ParsedFrame) {
         when (parsed.cmd) {
             Opcodes.REAL_TIME_HEART_RATE ->
@@ -125,7 +151,7 @@ class RingCommandClient @Inject constructor(
             Opcodes.GET_DEVICE_ELECTRICITY_VALUE ->
                 _batteryLevel.value = parseBattery(parsed.payload)
         }
-        val list = synchronized(lock) { waiters[parsed.cmd] } ?: return
+        val list = synchronized(lock) { waiters[parsed.cmd]?.toList() } ?: return
         for (channel in list) channel.trySend(parsed)
     }
 
