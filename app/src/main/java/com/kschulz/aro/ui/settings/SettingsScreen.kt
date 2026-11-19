@@ -2,6 +2,8 @@ package com.kschulz.aro.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,7 +17,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +55,9 @@ fun SettingsScreen(
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val hcEnabled by viewModel.healthConnectEnabled.collectAsStateWithLifecycle()
     val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
+    val autoHrInterval by viewModel.autoHrInterval.collectAsStateWithLifecycle()
+    val autoBpInterval by viewModel.autoBpInterval.collectAsStateWithLifecycle()
+    val autoSpo2Interval by viewModel.autoSpo2Interval.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
 
     var editingProfile by remember { mutableStateOf<Profile?>(null) }
@@ -188,6 +195,44 @@ fun SettingsScreen(
         }
 
         item {
+            Text("Continuous monitoring", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        "Configure how often the ring automatically takes background measurements. " +
+                            "Shorter intervals give denser all-day charts and use slightly more ring battery.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    IntervalPickerRow(
+                        label = "Heart rate",
+                        selectedMinutes = autoHrInterval,
+                        options = listOf(0, 10, 15, 30, 60),
+                        onSelect = viewModel::setAutoHrInterval,
+                    )
+                    IntervalPickerRow(
+                        label = "Blood oxygen (SpO2)",
+                        selectedMinutes = autoSpo2Interval,
+                        options = listOf(0, 30, 60),
+                        onSelect = viewModel::setAutoSpo2Interval,
+                    )
+                    IntervalPickerRow(
+                        label = "Blood pressure",
+                        selectedMinutes = autoBpInterval,
+                        options = listOf(0, 30, 60, 120),
+                        onSelect = viewModel::setAutoBpInterval,
+                    )
+                }
+            }
+        }
+
+        item {
             Text("Data sharing", style = MaterialTheme.typography.headlineSmall)
         }
 
@@ -320,6 +365,36 @@ fun SettingsScreen(
         item {
             message?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun IntervalPickerRow(
+    label: String,
+    selectedMinutes: Int,
+    options: List<Int>,
+    onSelect: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            options.forEach { min ->
+                val text = when {
+                    min == 0 -> "Off"
+                    min % 60 == 0 -> "${min / 60}h"
+                    else -> "${min}m"
+                }
+                FilterChip(
+                    selected = selectedMinutes == min,
+                    onClick = { onSelect(min) },
+                    label = { Text(text) },
+                )
             }
         }
     }

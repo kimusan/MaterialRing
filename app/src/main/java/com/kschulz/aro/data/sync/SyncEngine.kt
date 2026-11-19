@@ -43,6 +43,9 @@ class SyncEngine @Inject constructor(
         time: TimeSource,
         profile: Profile? = null,
         useMetric: Boolean = true,
+        hrIntervalMinutes: Int = 30,
+        bpIntervalMinutes: Int = 60,
+        spo2IntervalMinutes: Int = 60,
     ): SyncResult {
         if (!command.isConnected) return SyncResult(connected = false)
 
@@ -51,7 +54,16 @@ class SyncEngine @Inject constructor(
         // here so the 0x46 distribution query below is not answered with nothing.
         val caps = sendTimeBaseline(time)
         if (profile != null) {
-            syncProfileSettings(profile, time, useMetric)
+            syncProfileSettings(
+                profile = profile,
+                time = time,
+                useMetric = useMetric,
+                hrIntervalMinutes = hrIntervalMinutes,
+                bpIntervalMinutes = bpIntervalMinutes,
+                spo2IntervalMinutes = spo2IntervalMinutes,
+            )
+        } else {
+            applyMonitoringIntervals(hrIntervalMinutes, bpIntervalMinutes, spo2IntervalMinutes)
         }
 
         val distribution = queryDistribution()
@@ -151,6 +163,9 @@ class SyncEngine @Inject constructor(
         profile: Profile,
         time: TimeSource,
         useMetric: Boolean = true,
+        hrIntervalMinutes: Int = 30,
+        bpIntervalMinutes: Int = 60,
+        spo2IntervalMinutes: Int = 60,
     ) {
         if (!command.isConnected) return
         val currentYear = time.localClock().year
@@ -173,13 +188,38 @@ class SyncEngine @Inject constructor(
         )
         command.request(Opcodes.TARGET_SETTING, targetPayload)
 
-        val autoHrSwitch = RingPayloads.buildAutoHrSwitchPayload(enabled = true, intervalMinutes = 30)
+        applyMonitoringIntervals(hrIntervalMinutes, bpIntervalMinutes, spo2IntervalMinutes)
+    }
+
+    /**
+     * Push continuous/automatic measurement intervals directly to the connected ring:
+     *   - 0x16 HR timing monitor (0 = off, else 10/15/30/60 min)
+     *   - 0x0C BP timing monitor (0 = off, else 30/60/120 min)
+     *   - 0x2C SpO2 timing monitor (0 = off, else 30/60 min)
+     */
+    suspend fun applyMonitoringIntervals(
+        hrIntervalMinutes: Int,
+        bpIntervalMinutes: Int,
+        spo2IntervalMinutes: Int,
+    ) {
+        if (!command.isConnected) return
+
+        val autoHrSwitch = RingPayloads.buildAutoHrSwitchPayload(
+            enabled = hrIntervalMinutes > 0,
+            intervalMinutes = hrIntervalMinutes.coerceAtLeast(10),
+        )
         command.request(Opcodes.HR_TIMING_MONITOR_SWITCH, autoHrSwitch)
 
-        val autoBpSwitch = RingPayloads.buildAutoBpSwitchPayload(enabled = true, intervalMinutes = 60)
+        val autoBpSwitch = RingPayloads.buildAutoBpSwitchPayload(
+            enabled = bpIntervalMinutes > 0,
+            intervalMinutes = bpIntervalMinutes.coerceAtLeast(30),
+        )
         command.request(Opcodes.BP_TIMING_MONITOR_SWITCH, autoBpSwitch)
 
-        val autoSpo2Switch = RingPayloads.buildAutoSpo2SettingPayload(enabled = true)
+        val autoSpo2Switch = RingPayloads.buildAutoSpo2SettingPayload(
+            enabled = spo2IntervalMinutes > 0,
+            intervalMinutes = spo2IntervalMinutes.coerceAtLeast(30),
+        )
         command.request(Opcodes.AUTO_SPO2_SETTING, autoSpo2Switch)
     }
 

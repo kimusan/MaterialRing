@@ -48,7 +48,43 @@ class SettingsRepository @Inject constructor(
         dao.upsert(AppSetting(SettingsKeys.USE_METRIC_UNITS, if (metric) 1L else 0L))
     }
 
+    /** Auto heart-rate interval in minutes (0 = off). Default 30 min. */
+    fun observeAutoHrInterval(): Flow<Int> =
+        dao.observe(SettingsKeys.AUTO_HR_INTERVAL_MIN)
+            .map { (it?.value ?: DEFAULT_HR_INTERVAL_MIN.toLong()).toInt() }
+            .distinctUntilChanged()
+            .catch { emitAll(flowOf(DEFAULT_HR_INTERVAL_MIN)) }
+
+    suspend fun setAutoHrInterval(minutes: Int) {
+        dao.upsert(AppSetting(SettingsKeys.AUTO_HR_INTERVAL_MIN, minutes.toLong()))
+    }
+
+    /** Auto blood-pressure interval in minutes (0 = off). Default 60 min. */
+    fun observeAutoBpInterval(): Flow<Int> =
+        dao.observe(SettingsKeys.AUTO_BP_INTERVAL_MIN)
+            .map { (it?.value ?: DEFAULT_BP_INTERVAL_MIN.toLong()).toInt() }
+            .distinctUntilChanged()
+            .catch { emitAll(flowOf(DEFAULT_BP_INTERVAL_MIN)) }
+
+    suspend fun setAutoBpInterval(minutes: Int) {
+        dao.upsert(AppSetting(SettingsKeys.AUTO_BP_INTERVAL_MIN, minutes.toLong()))
+    }
+
+    /** Auto blood-oxygen (SpO2) interval in minutes (0 = off). Default 60 min. */
+    fun observeAutoSpo2Interval(): Flow<Int> =
+        dao.observe(SettingsKeys.AUTO_SPO2_INTERVAL_MIN)
+            .map { (it?.value ?: DEFAULT_SPO2_INTERVAL_MIN.toLong()).toInt() }
+            .distinctUntilChanged()
+            .catch { emitAll(flowOf(DEFAULT_SPO2_INTERVAL_MIN)) }
+
+    suspend fun setAutoSpo2Interval(minutes: Int) {
+        dao.upsert(AppSetting(SettingsKeys.AUTO_SPO2_INTERVAL_MIN, minutes.toLong()))
+    }
+
     companion object {
         const val NO_PROFILE = -1L
+        const val DEFAULT_HR_INTERVAL_MIN = 30
+        const val DEFAULT_BP_INTERVAL_MIN = 60
+        const val DEFAULT_SPO2_INTERVAL_MIN = 60
     }
 }

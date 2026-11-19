@@ -166,21 +166,27 @@ object RingPayloads {
      * 0x16 HR_TIMING_MONITOR_SWITCH (`HeartRateSettingReq.getWriteInstance` in smali).
      * Enables/disables 24-hour automatic heart-rate monitoring at [intervalMinutes].
      */
+    /**
+     * 0x16 HR_TIMING_MONITOR_SWITCH (`HeartRateSettingReq.getWriteInstance` in smali):
+     *   [0] 0x02 (write sub-command)
+     *   [1] 0x01 = enable, 0x02 = disable
+     *   [2] intervalMinutes (e.g. 10, 15, 30, 60)
+     *   [3] hrStart (0)
+     *   [4] hrTooLow (0 = off)
+     *   [5] hrTooHigh (0 = off)
+     *   [6] hrTooSwitch (0 = alerts off)
+     */
     fun buildAutoHrSwitchPayload(
         enabled: Boolean = true,
-        startHour: Int = 0,
-        startMinute: Int = 0,
-        endHour: Int = 23,
-        endMinute: Int = 59,
         intervalMinutes: Int = 30,
     ): ByteArray = byteArrayOf(
         0x02,
         if (enabled) 0x01 else 0x02,
-        startHour.coerceIn(0, 23).toByte(),
-        startMinute.coerceIn(0, 59).toByte(),
-        endHour.coerceIn(0, 23).toByte(),
-        endMinute.coerceIn(0, 59).toByte(),
         intervalMinutes.coerceIn(5, 60).toByte(),
+        0x00,
+        0x00,
+        0x00,
+        0x00,
     )
 
     /**
@@ -893,12 +899,19 @@ object RingPayloads {
     }
 
     /**
-     * 0x2C AUTO_SPO2_SETTING request payload (`BloodOxygenSettingReq.getWriteInstance` in smali):
+     * 0x2C AUTO_SPO2_SETTING request payload (`BloodOxygenSettingReq.getWriteInstance(enabled, interval)` in smali):
      *   [0] 0x02 (write sub-command)
      *   [1] 0x01 = enable auto SpO2, 0x00 = disable
+     *   [2] intervalMinutes (e.g. 30, 60)
      */
-    fun buildAutoSpo2SettingPayload(enabled: Boolean): ByteArray =
-        byteArrayOf(0x02, if (enabled) 0x01 else 0x00)
+    fun buildAutoSpo2SettingPayload(
+        enabled: Boolean,
+        intervalMinutes: Int = 60,
+    ): ByteArray = byteArrayOf(
+        0x02,
+        if (enabled) 0x01 else 0x00,
+        intervalMinutes.coerceIn(15, 120).toByte(),
+    )
 
     /**
      * 0xBC 0x2A auto-SpO2 big-data payload (`BloodOxygenRepository$syncAutoBloodOxygen` /

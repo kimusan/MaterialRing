@@ -537,7 +537,18 @@ class HomeViewModel @Inject constructor(
                 command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
                 val currentProfile = profiles.getById(profileId)
                 val metric = settings.observeUseMetric().first()
-                val result = engine.sync(profileId, time, currentProfile, metric)
+                val hrInterval = settings.observeAutoHrInterval().first()
+                val bpInterval = settings.observeAutoBpInterval().first()
+                val spo2Interval = settings.observeAutoSpo2Interval().first()
+                val result = engine.sync(
+                    profileId = profileId,
+                    time = time,
+                    profile = currentProfile,
+                    useMetric = metric,
+                    hrIntervalMinutes = hrInterval,
+                    bpIntervalMinutes = bpInterval,
+                    spo2IntervalMinutes = spo2Interval,
+                )
                 _lastSync.value = if (result.connected) {
                     val clock = time.localClock()
                     val hhmm = "%02d:%02d".format(clock.hour, clock.minute)

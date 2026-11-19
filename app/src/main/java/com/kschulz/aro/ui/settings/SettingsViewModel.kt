@@ -56,8 +56,59 @@ class SettingsViewModel @Inject constructor(
     val useMetric: StateFlow<Boolean> =
         settings.observeUseMetric().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
+    val autoHrInterval: StateFlow<Int> =
+        settings.observeAutoHrInterval().stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            SettingsRepository.DEFAULT_HR_INTERVAL_MIN,
+        )
+
+    val autoBpInterval: StateFlow<Int> =
+        settings.observeAutoBpInterval().stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            SettingsRepository.DEFAULT_BP_INTERVAL_MIN,
+        )
+
+    val autoSpo2Interval: StateFlow<Int> =
+        settings.observeAutoSpo2Interval().stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            SettingsRepository.DEFAULT_SPO2_INTERVAL_MIN,
+        )
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    fun setAutoHrInterval(minutes: Int) {
+        viewModelScope.launch {
+            settings.setAutoHrInterval(minutes)
+            pushMonitoringIntervals(hr = minutes, bp = autoBpInterval.value, spo2 = autoSpo2Interval.value)
+        }
+    }
+
+    fun setAutoBpInterval(minutes: Int) {
+        viewModelScope.launch {
+            settings.setAutoBpInterval(minutes)
+            pushMonitoringIntervals(hr = autoHrInterval.value, bp = minutes, spo2 = autoSpo2Interval.value)
+        }
+    }
+
+    fun setAutoSpo2Interval(minutes: Int) {
+        viewModelScope.launch {
+            settings.setAutoSpo2Interval(minutes)
+            pushMonitoringIntervals(hr = autoHrInterval.value, bp = autoBpInterval.value, spo2 = minutes)
+        }
+    }
+
+    private suspend fun pushMonitoringIntervals(hr: Int, bp: Int, spo2: Int) {
+        if (transport.isConnected) {
+            syncEngine.applyMonitoringIntervals(hr, bp, spo2)
+            _message.value = "Updated monitoring schedule on ring"
+        } else {
+            _message.value = "Saved — will apply to ring on next connect"
+        }
+    }
 
     fun addProfile(name: String) {
         if (name.isBlank()) return
