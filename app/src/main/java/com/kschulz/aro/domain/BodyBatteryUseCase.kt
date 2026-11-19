@@ -79,6 +79,7 @@ class BodyBatteryUseCase @Inject constructor(
         val points = BodyBatteryAlgorithm.computeHourly(inputs)
             .map { it.copy(profileId = profileId) }
 
+        health.deleteBodyBatteryAfter(profileId, toHour)
         if (points.isNotEmpty()) health.upsertBodyBattery(profileId, points)
         return points
     }

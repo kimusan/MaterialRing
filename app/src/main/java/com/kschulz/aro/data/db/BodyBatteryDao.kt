@@ -17,4 +17,7 @@ interface BodyBatteryDao {
 
     @Query("DELETE FROM body_battery WHERE profileId = :profileId AND epochHour < :before")
     suspend fun deleteBefore(profileId: Long, before: Long)
+
+    @Query("DELETE FROM body_battery WHERE profileId = :profileId AND epochHour > :after")
+    suspend fun deleteAfter(profileId: Long, after: Long)
 }

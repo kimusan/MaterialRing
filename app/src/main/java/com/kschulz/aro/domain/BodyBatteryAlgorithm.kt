@@ -41,7 +41,18 @@ object BodyBatteryAlgorithm {
         val out = ArrayList<BodyBatteryPoint>(sorted.size)
 
         for (h in sorted) {
-            val sleepFrac = (h.sleepMinutes / 60.0).coerceIn(0.0, 1.0)
+            val hourOfDay = ((h.epochHour % 24L) + 24L) % 24L
+            val inferredSleepMin = if (
+                h.sleepMinutes == 0 &&
+                h.steps == 0 &&
+                h.meanHr == null &&
+                hourOfDay in 0..5
+            ) {
+                45
+            } else {
+                h.sleepMinutes
+            }
+            val sleepFrac = (inferredSleepMin / 60.0).coerceIn(0.0, 1.0)
             val awakeFrac = 1.0 - sleepFrac
 
             // Sleep recharges energy; lower HR during sleep improves recovery efficiency.

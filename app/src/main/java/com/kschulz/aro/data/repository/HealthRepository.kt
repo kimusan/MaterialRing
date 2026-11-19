@@ -114,6 +114,19 @@ class HealthRepository @Inject constructor(
         if (points.isNotEmpty()) bodyBattery.upsertAll(points)
     }
 
+    suspend fun deleteBodyBatteryAfter(profileId: Long, afterHour: Long) {
+        bodyBattery.deleteAfter(profileId, afterHour)
+    }
+
+    suspend fun bloodPressureFor(profileId: Long, from: Long, to: Long): List<BloodPressure> =
+        bloodPressure.observeBetween(profileId, from, to).firstOrNull() ?: emptyList()
+
+    suspend fun spo2For(profileId: Long, from: Long, to: Long): List<Spo2Sample> =
+        spo2.observeBetween(profileId, from, to).firstOrNull() ?: emptyList()
+
+    suspend fun sleepSegmentsFor(sessionId: Long): List<SleepSegment> =
+        sleep.segments(sessionId).firstOrNull() ?: emptyList()
+
     // ----- Blood oxygen (SpO2) -----
     fun observeSpo2Between(from: Long, to: Long): Flow<List<Spo2Sample>> =
         scoped(emptyList()) { pid -> spo2.observeBetween(pid, from, to) }
