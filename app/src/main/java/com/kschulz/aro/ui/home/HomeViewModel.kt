@@ -71,8 +71,7 @@ class HomeViewModel @Inject constructor(
         .map { it == ConnectionState.CONNECTED }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
-    val boundRing: StateFlow<Ring?> = devices.observeAll()
-        .map { it.firstOrNull() }
+    val boundRing: StateFlow<Ring?> = devices.observeActive()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // Live values (no persistence).
@@ -131,10 +130,10 @@ class HomeViewModel @Inject constructor(
     private var profileSeeded = false
 
     init {
-        // Automatically connect to the bound ring on startup if permissions are granted.
+        // Automatically connect to the single active ring on startup if permissions are granted.
         viewModelScope.launch {
-            devices.observeAll().collect { bound ->
-                val ring = bound.firstOrNull() ?: return@collect
+            devices.observeActive().collect { ring ->
+                if (ring == null) return@collect
                 if (
                     transport.connectionState.value == ConnectionState.DISCONNECTED &&
                     BlePermissions.hasAllPermissions(context)
@@ -423,7 +422,7 @@ class HomeViewModel @Inject constructor(
 
     private suspend fun ensureConnected(): Boolean {
         if (command.isConnected) return true
-        val ring = devices.observeAll().first().firstOrNull() ?: return false
+        val ring = devices.observeActive().first() ?: return false
         if (transport.connectionState.value != ConnectionState.CONNECTING) {
             if (!transport.connect(ring.macAddress)) return false
         }
@@ -439,7 +438,7 @@ class HomeViewModel @Inject constructor(
 
     fun reconnect() {
         viewModelScope.launch {
-            val ring = devices.observeAll().first().firstOrNull()
+            val ring = devices.observeActive().first()
             if (ring == null) {
                 _lastSync.value = "No bound ring"
                 return@launch
@@ -477,7 +476,7 @@ class HomeViewModel @Inject constructor(
                     return@launch
                 }
                 if (!command.isConnected) {
-                    val ring = devices.observeAll().first().firstOrNull()
+                    val ring = devices.observeActive().first()
                     if (ring == null) {
                         _lastSync.value = "No ring bound"
                         return@launch

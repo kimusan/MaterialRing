@@ -27,7 +27,7 @@ import com.kschulz.aro.data.model.StepDay
         BloodPressure::class,
         BodyBatteryPoint::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 @TypeConverters(BpSourceConverter::class)
@@ -57,6 +57,16 @@ abstract class AroDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE profiles ADD COLUMN goalDistanceMeters INTEGER NOT NULL DEFAULT 5000")
                 db.execSQL("ALTER TABLE profiles ADD COLUMN goalSleepMinutes INTEGER NOT NULL DEFAULT 480")
                 db.execSQL("ALTER TABLE profiles ADD COLUMN isConfigured INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE rings ADD COLUMN isActive INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "UPDATE rings SET isActive = 1 WHERE macAddress = " +
+                        "(SELECT macAddress FROM rings ORDER BY boundAtEpochMs DESC LIMIT 1)",
+                )
             }
         }
     }

@@ -56,6 +56,9 @@ class RingBleTransport @Inject constructor(
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    private val _activeMac = MutableStateFlow<String?>(null)
+    val activeMac: StateFlow<String?> = _activeMac.asStateFlow()
+
     // Raw device notifications. DROP_OLDEST keeps the GATT callback thread from ever
     // blocking on a slow consumer.
     private val _notifies = MutableSharedFlow<ByteArray>(
@@ -108,6 +111,7 @@ class RingBleTransport @Inject constructor(
             reconnectJob = null
             closeGattLocked()
             this.device = device
+            _activeMac.value = device.address
             reconnectAttempts = 0
             _connectionState.value = ConnectionState.CONNECTING
             AroDbg.d("connectGatt ${device.address}")
@@ -120,6 +124,7 @@ class RingBleTransport @Inject constructor(
             gatt = g
             if (g == null) {
                 AroDbg.d("connectGatt returned null")
+                _activeMac.value = null
                 _connectionState.value = ConnectionState.DISCONNECTED
             }
         }
@@ -131,6 +136,7 @@ class RingBleTransport @Inject constructor(
             reconnectJob?.cancel()
             reconnectJob = null
             device = null
+            _activeMac.value = null
             reconnectAttempts = 0
             closeGattLocked()
             _connectionState.value = ConnectionState.DISCONNECTED

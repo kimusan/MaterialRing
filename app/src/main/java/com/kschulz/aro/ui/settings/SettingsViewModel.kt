@@ -43,6 +43,11 @@ class SettingsViewModel @Inject constructor(
     val boundDevices: StateFlow<List<Ring>> =
         devices.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val activeRing: StateFlow<Ring?> =
+        devices.observeActive().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val activeTransportMac: StateFlow<String?> = transport.activeMac
+
     val connectionState: StateFlow<ConnectionState> = transport.connectionState
 
     val healthConnectEnabled: StateFlow<Boolean> =
@@ -148,13 +153,45 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun switchRing(mac: String) {
+        viewModelScope.launch {
+            val target = devices.getByMac(mac) ?: return@launch
+            _message.value = "Switching to ${target.displayName}..."
+            // Enforce single active ring at a time by disconnecting any previous ring first.
+            transport.disconnect()
+            devices.setActive(mac)
+            if (!transport.connect(mac)) {
+                _message.value = "${target.displayName} set active (Bluetooth unavailable)"
+                return@launch
+            }
+            val result = withTimeoutOrNull(10_000L) {
+                transport.connectionState.first { it != ConnectionState.CONNECTING }
+            }
+            _message.value = if (result == ConnectionState.CONNECTED) {
+                "Switched to ${target.displayName}"
+            } else {
+                transport.disconnect()
+                "${target.displayName} is now active (not nearby)"
+            }
+        }
+    }
+
     fun unbind(mac: String) {
         viewModelScope.launch {
-            // Tear down active BLE GATT session first so the ring resumes advertising
-            // and any in-flight sync commands abort immediately.
-            transport.disconnect()
+            val wasConnectedMac = transport.activeMac.value == mac
+            if (wasConnectedMac) {
+                // Tear down active BLE GATT session first so the ring resumes advertising
+                // and any in-flight sync commands abort immediately.
+                transport.disconnect()
+            }
             devices.unbind(mac)
-            _message.value = "Device unbound"
+            val nextActive = devices.observeActive().first()
+            if (wasConnectedMac && nextActive != null) {
+                transport.connect(nextActive.macAddress)
+                _message.value = "Device unbound. Switched to ${nextActive.displayName}."
+            } else {
+                _message.value = "Device unbound"
+            }
         }
     }
 }

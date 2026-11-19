@@ -118,17 +118,24 @@ private fun AppRoot(device: DeviceViewModel = hiltViewModel()) {
     }
 
     val bound by device.boundDevices.collectAsStateWithLifecycle()
-    if (bound.isEmpty()) {
-        // No device bound yet: the whole app is the scan/bind flow.
+    var addingRing by remember { mutableStateOf(false) }
+
+    if (bound.isEmpty() || addingRing) {
+        // Either no device bound yet, or the user tapped "Add ring" in Settings.
         ScanScreen(
             viewModel = device,
             hasPermissions = hasBlePermissions,
             onRequestPermissions = requestPermissions,
+            canCancel = bound.isNotEmpty(),
+            onCancel = { addingRing = false },
+            alreadyBoundMacs = bound.map { it.macAddress }.toSet(),
+            onBound = { addingRing = false },
         )
     } else {
         MainScaffold(
             hasPermissions = hasBlePermissions,
             onRequestPermissions = requestPermissions,
+            onAddRing = { addingRing = true },
         )
     }
 }
@@ -140,6 +147,7 @@ private data class Tab(val label: String, val icon: ImageVector)
 private fun MainScaffold(
     hasPermissions: Boolean,
     onRequestPermissions: () -> Unit,
+    onAddRing: () -> Unit,
 ) {
     var selected by remember { mutableIntStateOf(0) }
     val tabs = listOf(
@@ -196,7 +204,7 @@ private fun MainScaffold(
             when (selected) {
                 0 -> HomeScreen(modifier = content)
                 1 -> HistoryScreen(modifier = content)
-                2 -> SettingsScreen(modifier = content)
+                2 -> SettingsScreen(modifier = content, onAddRing = onAddRing)
             }
         }
     }

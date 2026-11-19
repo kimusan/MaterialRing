@@ -38,10 +38,16 @@ import com.kschulz.aro.ui.profile.ProfileEditorDialog
 import com.kschulz.aro.ui.profile.profileSummaryLine
 
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    viewModel: SettingsViewModel = hiltViewModel(),
+    modifier: Modifier = Modifier,
+    onAddRing: () -> Unit = {},
+) {
     val profiles by viewModel.allProfiles.collectAsStateWithLifecycle()
     val activeId by viewModel.activeProfileId.collectAsStateWithLifecycle()
     val devices by viewModel.boundDevices.collectAsStateWithLifecycle()
+    val activeRing by viewModel.activeRing.collectAsStateWithLifecycle()
+    val activeTransportMac by viewModel.activeTransportMac.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val hcEnabled by viewModel.healthConnectEnabled.collectAsStateWithLifecycle()
     val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
@@ -205,38 +211,91 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Mod
         }
 
         item {
-            Text("Devices", style = MaterialTheme.typography.headlineSmall)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Devices", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        text = "Multiple rings supported (one active at a time)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                FilledTonalButton(onClick = onAddRing) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        modifier = Modifier.padding(end = 6.dp),
+                    )
+                    Text("Add ring")
+                }
+            }
             if (devices.isEmpty()) {
-                Text("No bound devices.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "No bound devices.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
             devices.forEach { d ->
-                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                val isActiveRing = d.macAddress == activeRing?.macAddress
+                val ringConnectionState = if (isActiveRing && activeTransportMac == d.macAddress) {
+                    connectionState
+                } else {
+                    ConnectionState.DISCONNECTED
+                }
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    colors = if (isActiveRing) {
+                        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    } else {
+                        CardDefaults.cardColors()
+                    },
+                ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().padding(16.dp),
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(d.displayName, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                text = "${d.displayName}${if (isActiveRing) "  •  Active" else ""}",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
                             Text(
                                 "${d.macAddress}  •  HW ${d.hwRevision.ifEmpty { "—" }} / FW ${d.fwRevision.ifEmpty { "—" }}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                when (connectionState) {
-                                    ConnectionState.CONNECTED -> "Connected"
-                                    ConnectionState.CONNECTING -> "Connecting..."
-                                    ConnectionState.DISCONNECTED -> "Disconnected"
+                                text = if (!isActiveRing) {
+                                    "Standby"
+                                } else {
+                                    when (ringConnectionState) {
+                                        ConnectionState.CONNECTED -> "Connected"
+                                        ConnectionState.CONNECTING -> "Connecting..."
+                                        ConnectionState.DISCONNECTED -> "Disconnected"
+                                    }
                                 },
                                 style = MaterialTheme.typography.bodySmall,
-                                color = when (connectionState) {
-                                    ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primary
-                                    ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
-                                    ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.error
+                                color = if (!isActiveRing) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    when (ringConnectionState) {
+                                        ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primary
+                                        ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
+                                        ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.error
+                                    }
                                 },
                             )
                         }
-                        if (connectionState == ConnectionState.DISCONNECTED) {
+                        if (!isActiveRing) {
+                            FilledTonalButton(onClick = { viewModel.switchRing(d.macAddress) }) {
+                                Text("Switch")
+                            }
+                        } else if (ringConnectionState == ConnectionState.DISCONNECTED) {
                             TextButton(onClick = { viewModel.reconnect(d.macAddress) }) {
                                 Text("Reconnect")
                             }

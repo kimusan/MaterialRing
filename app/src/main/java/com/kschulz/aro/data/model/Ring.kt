@@ -11,4 +11,5 @@ data class Ring(
     val hwRevision: String = "",
     val fwRevision: String = "",
     val boundAtEpochMs: Long,
+    val isActive: Boolean = false,
 )

@@ -80,11 +80,11 @@ class DeviceViewModel @Inject constructor(
 
     fun onPermissionsGranted() {
         viewModelScope.launch {
-            val currentBound = devices.observeAll().first()
-            if (currentBound.isEmpty()) {
+            val active = devices.observeActive().first()
+            if (active == null) {
                 startScanning()
             } else if (!transport.isConnected && transport.connectionState.value == ConnectionState.DISCONNECTED) {
-                transport.connect(currentBound.first().macAddress)
+                transport.connect(active.macAddress)
             }
         }
     }
@@ -106,10 +106,12 @@ class DeviceViewModel @Inject constructor(
         }
     }
 
-    fun connect(mac: String, name: String) {
+    fun connect(mac: String, name: String, onBound: () -> Unit = {}) {
         connectJob?.cancel()
         _status.value = "Connecting to $name..."
         connectJob = viewModelScope.launch {
+            // Stop scanning before opening GATT and close any previously active ring link.
+            scanner.stop()
             if (!transport.connect(mac)) {
                 _status.value = "Bluetooth unavailable"
                 return@launch
@@ -119,6 +121,7 @@ class DeviceViewModel @Inject constructor(
             }
             if (final == ConnectionState.CONNECTED) {
                 baseline(mac, name)
+                onBound()
             } else {
                 transport.disconnect()
                 _status.value = "Connection failed. Is the ring on and nearby?"

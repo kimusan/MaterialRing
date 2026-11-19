@@ -45,6 +45,10 @@ fun ScanScreen(
     viewModel: DeviceViewModel = hiltViewModel(),
     hasPermissions: Boolean = true,
     onRequestPermissions: () -> Unit = {},
+    canCancel: Boolean = false,
+    onCancel: () -> Unit = {},
+    alreadyBoundMacs: Set<String> = emptySet(),
+    onBound: () -> Unit = {},
 ) {
     val discovered by viewModel.discovered.collectAsStateWithLifecycle()
     val status by viewModel.status.collectAsStateWithLifecycle()
@@ -90,12 +94,16 @@ fun ScanScreen(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Scan for your ring",
+                text = if (canCancel) "Add another ring" else "Scan for your ring",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Keep your ring nearby and charged. It advertises with its model prefix (e.g. R03).",
+                text = if (canCancel) {
+                    "Connecting to a new ring will make it the active ring."
+                } else {
+                    "Keep your ring nearby and charged. It advertises with its model prefix (e.g. R03)."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -191,11 +199,12 @@ fun ScanScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(discovered, key = { it.macAddress }) { ring ->
+                        val isSaved = ring.macAddress in alreadyBoundMacs
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = {
                                 viewModel.stopScanning()
-                                viewModel.connect(ring.macAddress, ring.name)
+                                viewModel.connect(ring.macAddress, ring.name, onBound)
                             },
                         ) {
                             Row(
@@ -207,7 +216,7 @@ fun ScanScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = ring.name,
+                                        text = if (isSaved) "${ring.name}  •  Saved" else ring.name,
                                         style = MaterialTheme.typography.titleMedium,
                                     )
                                     Text(
@@ -220,10 +229,10 @@ fun ScanScreen(
                                     enabled = state != ConnectionState.CONNECTING,
                                     onClick = {
                                         viewModel.stopScanning()
-                                        viewModel.connect(ring.macAddress, ring.name)
+                                        viewModel.connect(ring.macAddress, ring.name, onBound)
                                     },
                                 ) {
-                                    Text("Connect")
+                                    Text(if (isSaved) "Activate" else "Connect")
                                 }
                             }
                         }
@@ -231,25 +240,37 @@ fun ScanScreen(
                 }
             }
 
-            if (hasPermissions) {
+            if (hasPermissions || canCancel) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                 ) {
-                    if (isScanning) {
-                        OutlinedButton(onClick = { viewModel.stopScanning() }) {
-                            Text("Stop scanning")
+                    if (canCancel) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.stopScanning()
+                                onCancel()
+                            },
+                        ) {
+                            Text("Cancel")
                         }
-                    } else {
-                        Button(onClick = { viewModel.startScanning() }) {
-                            Icon(
-                                imageVector = Icons.Filled.Refresh,
-                                contentDescription = null,
-                                modifier = Modifier.padding(end = 8.dp),
-                            )
-                            Text("Scan again")
+                    }
+                    if (hasPermissions) {
+                        if (isScanning) {
+                            OutlinedButton(onClick = { viewModel.stopScanning() }) {
+                                Text("Stop scanning")
+                            }
+                        } else {
+                            Button(onClick = { viewModel.startScanning() }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = null,
+                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                                Text("Scan again")
+                            }
                         }
                     }
                 }
