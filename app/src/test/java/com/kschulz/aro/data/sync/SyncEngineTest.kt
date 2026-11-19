@@ -85,10 +85,9 @@ class SyncEngineTest {
 
         private fun stepsPayload(steps: Int): ByteArray {
             val p = ByteArray(14)
-            p[0] = (steps shr 24).toByte()
-            p[1] = (steps shr 16).toByte()
-            p[2] = (steps shr 8).toByte()
-            p[3] = steps.toByte()
+            p[0] = ((steps shr 16) and 0xFF).toByte()
+            p[1] = ((steps shr 8) and 0xFF).toByte()
+            p[2] = (steps and 0xFF).toByte()
             return p
         }
 

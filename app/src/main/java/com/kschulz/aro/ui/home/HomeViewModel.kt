@@ -143,11 +143,30 @@ class HomeViewModel @Inject constructor(
                 }
             }
         }
-        // Fetch battery level whenever the ring reaches CONNECTED state.
+        // Fetch battery level and perform an initial sync when the ring reaches CONNECTED state.
         viewModelScope.launch {
             transport.connectionState.collect { state ->
-                if (state == ConnectionState.CONNECTED && battery.value < 0) {
-                    command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+                if (state == ConnectionState.CONNECTED) {
+                    if (battery.value < 0) {
+                        command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+                    }
+                    if (_lastSync.value == null && !_syncing.value) {
+                        syncNow()
+                    }
+                }
+            }
+        }
+        // React to autonomous ring notifications (0x73 CMD_DEVICE_NOTIFY) for live updates
+        // while connected: 0x04 = steps, 0x01 = heart rate, 0x02 = auto-BP.
+        viewModelScope.launch {
+            command.deviceNotifications.collect { dataType ->
+                if (_syncing.value || _measurement.value.active) return@collect
+                val profileId = settings.observeActiveProfileId().first()
+                if (profileId == SettingsRepository.NO_PROFILE) return@collect
+                when (dataType) {
+                    0x04 -> engine.syncTodaySteps(profileId, time)
+                    0x01 -> engine.syncTodayHeartRate(profileId, time)
+                    0x02 -> engine.syncAutoBp(profileId, time, activeProfile.value)
                 }
             }
         }

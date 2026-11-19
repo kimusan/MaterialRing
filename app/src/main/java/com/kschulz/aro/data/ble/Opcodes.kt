@@ -14,9 +14,10 @@ object Opcodes {
     const val BIND_SUCCESS = 0x10
     const val REBOOT = 0x08
 
-    // Steps / activity
+    // Steps / activity / sleep
     const val GET_STEP_TOTAL_SOMEDAY = 0x07
     const val GET_SPORT = 0x13
+    const val NEW_SLEEP_PROTOCOL = 0x27
     const val GET_STEP_SOMEDAY_DETAIL = 0x43
     const val GET_SLEEP = 0x44
     const val QUERY_DATA_DISTRIBUTION = 0x46
@@ -36,11 +37,12 @@ object Opcodes {
     const val GET_BAND_PRESSURE = 0x14
     const val PRESSURE_SETTING = 0x36
 
-    // Display / misc
+    // Display / misc / autonomous notifications
     const val GET_PERSONALIZATION_SETTING = 0x17
     const val GET_BRIGHTNESS = 0x1B
     const val TARGET_SETTING = 0x21
     const val FIND_THE_PHONE = 0x22
+    const val DEVICE_NOTIFY = 0x73
 
     // Version
     const val MSG_GET_HW_AND_FW_VERSION = 0x93.toByte()

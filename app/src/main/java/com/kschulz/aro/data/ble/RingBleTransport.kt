@@ -45,6 +45,9 @@ class RingBleTransport @Inject constructor(
     private var device: BluetoothDevice? = null
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
     private var notifyCharacteristic: BluetoothGattCharacteristic? = null
+    private var secondaryWriteCharacteristic: BluetoothGattCharacteristic? = null
+    private var secondaryNotifyCharacteristic: BluetoothGattCharacteristic? = null
+    private var secondaryNotifyEnabled = false
     private var reconnectAttempts = 0
     private var reconnectJob: Job? = null
     private var pendingWrite: WriteRequest? = null
@@ -185,14 +188,22 @@ class RingBleTransport @Inject constructor(
     private fun performWrite(req: WriteRequest) {
         synchronized(gattLock) {
             val g = gatt
-            val char = writeCharacteristic
+            val isLargeData = req.frame.bytes.isNotEmpty() &&
+                req.frame.bytes[0] == RingProtocolCodec.LARGE_DATA_SYNC_BYTE
+            val char = if (isLargeData) {
+                secondaryWriteCharacteristic ?: writeCharacteristic
+            } else {
+                writeCharacteristic
+            }
             if (g == null || char == null || _connectionState.value != ConnectionState.CONNECTED) {
                 AroDbg.d("performWrite rejected: gatt=${g != null} char=${char != null} state=${_connectionState.value}")
                 req.result.complete(false)
                 return
             }
-            val noResponse =
-                char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
+            val hasWriteWithRsp =
+                char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0
+            val noResponse = !hasWriteWithRsp &&
+                (char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
             val type = if (noResponse) {
                 BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             } else {
@@ -225,12 +236,18 @@ class RingBleTransport @Inject constructor(
             notifyCharacteristic?.let {
                 try { g.setCharacteristicNotification(it, false) } catch (_: SecurityException) {}
             }
+            secondaryNotifyCharacteristic?.let {
+                try { g.setCharacteristicNotification(it, false) } catch (_: SecurityException) {}
+            }
             try { g.disconnect() } catch (_: SecurityException) {}
             try { g.close() } catch (_: SecurityException) {}
         }
         gatt = null
         writeCharacteristic = null
         notifyCharacteristic = null
+        secondaryWriteCharacteristic = null
+        secondaryNotifyCharacteristic = null
+        secondaryNotifyEnabled = false
         pendingWrite?.let { it.result.complete(false) }
         pendingWrite = null
         pendingRead?.let { it.result.completeExceptionally(InterruptedException("gatt closed")) }
@@ -307,16 +324,32 @@ class RingBleTransport @Inject constructor(
                 disconnect()
                 return
             }
-            val service = g.getService(GattUuids.SERIAL_PORT_SERVICE)
-            val wChar = service?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
-            val nChar = service?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+            val cmdService = g.getService(GattUuids.COMMAND_SERVICE)
+            val serialService = g.getService(GattUuids.SERIAL_PORT_SERVICE)
+            val wChar = cmdService?.getCharacteristic(GattUuids.COMMAND_WRITE_CHARACTERISTIC)
+                ?: serialService?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
+            val nChar = cmdService?.getCharacteristic(GattUuids.COMMAND_NOTIFY_CHARACTERISTIC)
+                ?: serialService?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+            val secWrite = if (cmdService != null) {
+                serialService?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
+            } else {
+                null
+            }
+            val secNotify = if (cmdService != null) {
+                serialService?.getCharacteristic(GattUuids.NOTIFICATION_CHARACTERISTIC)
+            } else {
+                null
+            }
             synchronized(gattLock) {
                 writeCharacteristic = wChar
                 notifyCharacteristic = nChar
+                secondaryWriteCharacteristic = secWrite
+                secondaryNotifyCharacteristic = secNotify
+                secondaryNotifyEnabled = false
             }
             AroDbg.d(
-                "serial service=${service != null} writeChar=${wChar != null} " +
-                    "notifyChar=${nChar != null} " +
+                "cmdService=${cmdService != null} serialService=${serialService != null} " +
+                    "writeChar=${wChar?.uuid} notifyChar=${nChar?.uuid} " +
                     "writeProps=${wChar?.properties}",
             )
             if (wChar == null || nChar == null) {
@@ -352,11 +385,22 @@ class RingBleTransport @Inject constructor(
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            synchronized(gattLock) {
+            val nextNotify = synchronized(gattLock) {
                 if (g !== gatt) return
+                val sec = secondaryNotifyCharacteristic
+                if (sec != null && !secondaryNotifyEnabled) {
+                    secondaryNotifyEnabled = true
+                    sec
+                } else {
+                    null
+                }
             }
-            AroDbg.d("onDescriptorWrite uuid=${descriptor.uuid} status=$status")
-            // CCCD write landed; the data channel is now ready for command traffic.
+            AroDbg.d("onDescriptorWrite char=${descriptor.characteristic?.uuid} status=$status")
+            if (nextNotify != null) {
+                enableNotifications(g, nextNotify)
+                return
+            }
+            // CCCD writes landed; the data channel is now ready for command traffic.
             if (_connectionState.value == ConnectionState.CONNECTING) markConnected()
         }
 
@@ -364,7 +408,9 @@ class RingBleTransport @Inject constructor(
             synchronized(gattLock) {
                 if (g !== gatt) return
             }
-            if (characteristic.uuid == GattUuids.NOTIFICATION_CHARACTERISTIC) {
+            if (characteristic.uuid == GattUuids.COMMAND_NOTIFY_CHARACTERISTIC ||
+                characteristic.uuid == GattUuids.NOTIFICATION_CHARACTERISTIC
+            ) {
                 AroDbg.d("notify ${value.size}B ${AroDbg.hex(value)}")
                 _notifies.tryEmit(value)
             }

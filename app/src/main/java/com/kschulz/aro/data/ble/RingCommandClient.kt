@@ -42,18 +42,32 @@ class RingCommandClient @Inject constructor(
     )
     val liveMeasurements: SharedFlow<RingPayloads.LiveMeasurementPacket> = _liveMeasurements.asSharedFlow()
 
+    /**
+     * Autonomous ring-to-app refresh notifications (`0x73` `CMD_DEVICE_NOTIFY`):
+     * `0x01` = HR updated, `0x02` = BP updated, `0x03` = SpO2 updated, `0x04` = Steps updated.
+     */
+    private val _deviceNotifications = MutableSharedFlow<Int>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val deviceNotifications: SharedFlow<Int> = _deviceNotifications.asSharedFlow()
+
     override val connectionState: StateFlow<ConnectionState>
         get() = transport.connectionState
 
     override val isConnected: Boolean
         get() = transport.isConnected
 
+    private var largeDataBuffer: ByteArray? = null
+    private var largeDataExpectedLen: Int = 0
+
     init {
         scope.launch {
             transport.notifies.collect { raw ->
-                val parsed = codec.decode(raw)
+                val fullFrame = reassembleIfLargeData(raw) ?: return@collect
+                val parsed = codec.decode(fullFrame)
                 if (parsed == null) {
-                    AroDbg.d("decode FAILED ${raw.size}B ${AroDbg.hex(raw)}")
+                    AroDbg.d("decode FAILED ${fullFrame.size}B ${AroDbg.hex(fullFrame)}")
                     return@collect
                 }
                 AroDbg.d("decode ok $parsed")
@@ -64,6 +78,8 @@ class RingCommandClient @Inject constructor(
             transport.connectionState.collect { state ->
                 if (state != ConnectionState.CONNECTED) {
                     _realTimeHeartRate.value = 0
+                    largeDataBuffer = null
+                    largeDataExpectedLen = 0
                     if (state == ConnectionState.DISCONNECTED) {
                         _batteryLevel.value = -1
                     }
@@ -71,6 +87,39 @@ class RingCommandClient @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Reassembles multi-chunk `0xBC` big-data packets (`LargeDataParser.smali` lines 99-196),
+     * or returns 16-byte command frames directly.
+     */
+    private fun reassembleIfLargeData(raw: ByteArray): ByteArray? {
+        if (raw.size >= RingProtocolCodec.HEADER_LEN &&
+            raw[0] == RingProtocolCodec.LARGE_DATA_SYNC_BYTE &&
+            largeDataBuffer == null
+        ) {
+            val len = (raw[2].toInt() and 0xFF) or ((raw[3].toInt() and 0xFF) shl 8)
+            return if (raw.size - RingProtocolCodec.HEADER_LEN >= len) {
+                raw
+            } else {
+                largeDataBuffer = raw
+                largeDataExpectedLen = len
+                null
+            }
+        }
+        val existing = largeDataBuffer
+        if (existing != null && raw.size != RingProtocolCodec.CMD_FRAME_LEN) {
+            val combined = existing + raw
+            return if (combined.size - RingProtocolCodec.HEADER_LEN >= largeDataExpectedLen) {
+                largeDataBuffer = null
+                largeDataExpectedLen = 0
+                combined
+            } else {
+                largeDataBuffer = combined
+                null
+            }
+        }
+        return raw
     }
 
     /** Write a command frame without waiting for a correlated response packet. */
@@ -178,15 +227,20 @@ class RingCommandClient @Inject constructor(
                     _liveMeasurements.tryEmit(pkt)
                 }
             }
+
+            Opcodes.DEVICE_NOTIFY -> {
+                parsed.payload.getOrNull(0)?.toInt()?.and(0xFF)?.let { dataType ->
+                    _deviceNotifications.tryEmit(dataType)
+                }
+            }
         }
         val list = synchronized(lock) { waiters[parsed.cmd]?.toList() } ?: return
         for (channel in list) channel.trySend(parsed)
     }
 
-    private fun parseBattery(payload: ByteArray): Int = when {
-        payload.size >= 4 -> ByteOrder.fromBeBytes(payload, 0, 4)
-        payload.size == 2 -> ByteOrder.fromBeBytes(payload, 0, 2)
-        payload.isNotEmpty() -> payload[0].toInt() and 0xFF
-        else -> -1
-    }
+    /**
+     * `0x03` (`BatteryRsp.smali` line 26): battery percentage is always `payload[0] & 0xFF` (`0..100`).
+     */
+    private fun parseBattery(payload: ByteArray): Int =
+        if (payload.isNotEmpty()) (payload[0].toInt() and 0xFF).coerceIn(0, 100) else -1
 }

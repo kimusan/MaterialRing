@@ -52,27 +52,38 @@ class RingProtocolCodecTest {
     }
 
     @Test
-    fun `encode builds the documented TX layout`() {
+    fun `encode builds the 16-byte BaseReqCmd TX layout with additive checksum`() {
         val payload = byteArrayOf(0x14, 0x00, 0x32)
         val frame = codec.encode(0x48, payload)
-        // [0xC4][cmd][len_lo][len_hi][crc_lo][crc_hi][payload]
-        assertEquals(0xC4.toByte(), frame.bytes[0])
-        assertEquals(0x48.toByte(), frame.bytes[1])
+        assertEquals(16, frame.bytes.size)
+        assertEquals(0x48.toByte(), frame.bytes[0])
+        assertArrayEquals(payload, frame.bytes.copyOfRange(1, 4))
+        assertArrayEquals(ByteArray(11), frame.bytes.copyOfRange(4, 15))
+        assertEquals(((0x48 + 0x14 + 0x00 + 0x32) and 0xFF).toByte(), frame.bytes[15])
+        assertTrue(SumCheck.verify(frame.bytes))
+    }
+
+    @Test
+    fun `encode empty payload builds a 16-byte SimpleKeyReq frame`() {
+        val frame = codec.encode(0x03)
+        assertEquals(16, frame.bytes.size)
+        assertEquals(0x03.toByte(), frame.bytes[0])
+        assertArrayEquals(ByteArray(14), frame.bytes.copyOfRange(1, 15))
+        assertEquals(0x03.toByte(), frame.bytes[15])
+    }
+
+    @Test
+    fun `encodeLargeData builds the LargeDataHandler header layout`() {
+        val payload = byteArrayOf(0x14, 0x00, 0x32)
+        val frame = codec.encodeLargeData(0x27, payload)
+        assertEquals(RingProtocolCodec.LARGE_DATA_SYNC_BYTE, frame.bytes[0])
+        assertEquals(0x27.toByte(), frame.bytes[1])
         assertEquals(0x03.toByte(), frame.bytes[2])
         assertEquals(0x00.toByte(), frame.bytes[3])
         val crc = Crc16.calc(payload)
         assertEquals((crc and 0xFF).toByte(), frame.bytes[4])
         assertEquals(((crc shr 8) and 0xFF).toByte(), frame.bytes[5])
         assertArrayEquals(payload, frame.bytes.copyOfRange(6, frame.bytes.size))
-    }
-
-    @Test
-    fun `encode empty payload is header only with FF FF crc slots`() {
-        val frame = codec.encode(0x03)
-        assertArrayEquals(
-            byteArrayOf(0xC4.toByte(), 0x03, 0x00, 0x00, -1, -1),
-            frame.bytes,
-        )
     }
 
     @Test

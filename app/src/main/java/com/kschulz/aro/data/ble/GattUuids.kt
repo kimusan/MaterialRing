@@ -2,9 +2,21 @@ package com.kschulz.aro.data.ble
 
 import java.util.UUID
 
-/** GATT UUIDs for the ring serial-port (NUS-style) data channel.
- *  Source: re/PROTOCOL.md section 1 (traced to Oudmon Constants.smali). */
+/**
+ * GATT UUIDs for the ring command and big-data channels.
+ * Traced to `com/oudmon/ble/base/communication/Constants.smali`:
+ * - Standard 16-byte commands (`CommandHandle` / `BaseReqCmd`) use [COMMAND_SERVICE] (`6e40fff0-...`),
+ *   writing to [COMMAND_WRITE_CHARACTERISTIC] (`6e400002-...`) and receiving notifications on
+ *   [COMMAND_NOTIFY_CHARACTERISTIC] (`6e400003-...`).
+ * - Big-data transfers (`LargeDataHandler`) use [SERIAL_PORT_SERVICE] (`de5bf728-...`),
+ *   writing to [WRITE_CHARACTERISTIC] (`de5bf72a-...`) and receiving notifications on
+ *   [NOTIFICATION_CHARACTERISTIC] (`de5bf729-...`).
+ */
 object GattUuids {
+    val COMMAND_SERVICE: UUID = UUID.fromString("6e40fff0-b5a3-f393-e0a9-e50e24dcca9e")
+    val COMMAND_WRITE_CHARACTERISTIC: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
+    val COMMAND_NOTIFY_CHARACTERISTIC: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+
     val SERIAL_PORT_SERVICE: UUID = UUID.fromString("de5bf728-d711-4e47-af26-65e3012a5dc7")
     val NOTIFICATION_CHARACTERISTIC: UUID = UUID.fromString("de5bf729-d711-4e47-af26-65e3012a5dc7")
     val WRITE_CHARACTERISTIC: UUID = UUID.fromString("de5bf72a-d711-4e47-af26-65e3012a5dc7")

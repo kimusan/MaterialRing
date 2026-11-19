@@ -49,7 +49,7 @@ class SyncEngine @Inject constructor(
         // The vendor's post-bind init chain sends SET_DEVICE_TIME (0x01) first, before any
         // data query; the ring answers history pulls only once it has a clock. Do the same
         // here so the 0x46 distribution query below is not answered with nothing.
-        sendTimeBaseline(time)
+        val caps = sendTimeBaseline(time)
         if (profile != null) {
             syncProfileSettings(profile, time, useMetric)
         }
@@ -57,7 +57,10 @@ class SyncEngine @Inject constructor(
         val distribution = queryDistribution()
         val days = if (distribution != null) DistributionBitmap.daysToPull(distribution)
         else DistributionBitmap.recentWindow()
-        com.kschulz.aro.data.ble.AroDbg.d("sync start: distribution=${distribution?.toString(16)} days=${days.sorted()}")
+        com.kschulz.aro.data.ble.AroDbg.d(
+            "sync start: distribution=${distribution?.toString(16)} days=${days.sorted()} " +
+                "newSleep=${caps.newSleepProtocol} manualBp=${caps.manualBpHistory}",
+        )
 
         val today = time.todayEpochDay()
         var steps = 0
@@ -68,14 +71,22 @@ class SyncEngine @Inject constructor(
         for (daysAgo in days) {
             val epochDay = time.epochDayForOffset(daysAgo)
             steps += pullStepsForDay(profileId, epochDay, daysAgo).size
-            hrSamples += pullHeartRate(profileId, daysAgo).size
-            sleepSessions += pullSleep(profileId, epochDay, daysAgo).size
+            hrSamples += pullHeartRate(profileId, epochDay, daysAgo, time).size
+            if (!caps.newSleepProtocol) {
+                sleepSessions += pullSleep(profileId, epochDay, daysAgo).size
+            }
+        }
+
+        if (caps.newSleepProtocol) {
+            sleepSessions += pullNewSleepProtocol(profileId, today).size
         }
 
         // Blood pressure queries (0x0D auto-BP and 0x14 manual-BP) return buffered readings
         // across days in one stream rather than taking a dayOffset.
         bpReadings += pullAutoBp(profileId, time, profile).size
-        bpReadings += pullManualBp(profileId).size
+        if (caps.manualBpHistory) {
+            bpReadings += pullManualBp(profileId).size
+        }
 
         // Body battery is derived from what we just stored; recompute for the window.
         val windowStartHour = time.epochDayForOffset(days.maxOfOrNull { it } ?: 0) * 24
@@ -84,8 +95,8 @@ class SyncEngine @Inject constructor(
             bodyBattery.recompute(profileId, windowStartHour, windowEndHour)
         }
 
-        // Confirm the bitmap cleared; report whether it did (best-effort).
-        val finalDistribution = queryDistribution()
+        // Confirm the bitmap cleared (only when 0x46 is supported by this ring).
+        val finalDistribution = if (distribution != null) queryDistribution() else null
         val confirmed = finalDistribution == null || DistributionBitmap.isComplete(finalDistribution)
         com.kschulz.aro.data.ble.AroDbg.d(
             "sync done: steps=$steps bp=$bpReadings hr=$hrSamples sleep=$sleepSessions " +
@@ -103,9 +114,27 @@ class SyncEngine @Inject constructor(
         )
     }
 
+    /** Fast incremental refresh for today's steps (`0x48`), triggered on `0x73` dataType `0x04`. */
+    suspend fun syncTodaySteps(profileId: Long, time: TimeSource): Int {
+        if (!command.isConnected) return 0
+        return pullStepsForDay(profileId, time.todayEpochDay(), 0).size
+    }
+
+    /** Fast incremental refresh for today's HR (`0x15`), triggered on `0x73` dataType `0x01`. */
+    suspend fun syncTodayHeartRate(profileId: Long, time: TimeSource): Int {
+        if (!command.isConnected) return 0
+        return pullHeartRate(profileId, time.todayEpochDay(), 0, time).size
+    }
+
+    /** Fast incremental refresh for auto-BP (`0x0D`), triggered on `0x73` dataType `0x02`. */
+    suspend fun syncAutoBp(profileId: Long, time: TimeSource, profile: Profile?): Int {
+        if (!command.isConnected) return 0
+        return pullAutoBp(profileId, time, profile).size
+    }
+
     /**
-     * Push user profile personalization (0x0A), target goals (0x21), and 24h auto-BP
-     * monitoring schedule (0x0C) to the connected ring.
+     * Push user profile personalization (0x0A), target goals (0x21), 24h auto-HR schedule (0x16),
+     * and 24h auto-BP monitoring schedule (0x0C) to the connected ring.
      */
     suspend fun syncProfileSettings(
         profile: Profile,
@@ -133,16 +162,25 @@ class SyncEngine @Inject constructor(
         )
         command.request(Opcodes.TARGET_SETTING, targetPayload)
 
+        val autoHrSwitch = RingPayloads.buildAutoHrSwitchPayload(enabled = true, intervalMinutes = 30)
+        command.request(Opcodes.HR_TIMING_MONITOR_SWITCH, autoHrSwitch)
+
         val autoBpSwitch = RingPayloads.buildAutoBpSwitchPayload(enabled = true, intervalMinutes = 60)
         command.request(Opcodes.BP_TIMING_MONITOR_SWITCH, autoBpSwitch)
     }
 
     private suspend fun queryDistribution(): Int? {
         val rsp = command.request(Opcodes.QUERY_DATA_DISTRIBUTION) ?: return null
+        if (rsp.error) return null
         return DistributionBitmap.parse(rsp.payload)
     }
 
-    private suspend fun sendTimeBaseline(time: TimeSource) {
+    private data class RingCapabilities(
+        val newSleepProtocol: Boolean = false,
+        val manualBpHistory: Boolean = true,
+    )
+
+    private suspend fun sendTimeBaseline(time: TimeSource): RingCapabilities {
         val c = time.localClock()
         val payload = RingPayloads.buildSetTimePayload(
             c.year, c.month, c.day, c.hour, c.minute, c.second,
@@ -151,14 +189,51 @@ class SyncEngine @Inject constructor(
             "set time baseline ${c.year}-${c.month}-${c.day} " +
                 "${c.hour}:${c.minute}:${c.second} ${AroDbg.hex(payload)}",
         )
-        command.request(Opcodes.SET_DEVICE_TIME, payload)
+        val rsp = command.request(Opcodes.SET_DEVICE_TIME, payload) ?: return RingCapabilities()
+        if (rsp.error) return RingCapabilities()
+        return RingCapabilities(
+            newSleepProtocol = RingPayloads.isNewSleepProtocolSupported(rsp.payload),
+            manualBpHistory = RingPayloads.isManualBpHistorySupported(rsp.payload),
+        )
     }
 
     private suspend fun pullStepsForDay(profileId: Long, epochDay: Long, daysAgo: Int): List<StepDay> {
-        val cmd = if (daysAgo == 0) Opcodes.GET_STEP_TODAY else Opcodes.GET_STEP_TOTAL_SOMEDAY
-        val payload = if (daysAgo == 0) null else ByteOrder.toLeBytes(daysAgo, 4)
-        val rsp = command.request(cmd, payload) ?: return emptyList()
-        val day = RingPayloads.parseStepToday(rsp.payload, epochDay) ?: return emptyList()
+        val day = if (daysAgo == 0) {
+            val rsp = command.request(Opcodes.GET_STEP_TODAY, null) ?: return emptyList()
+            if (rsp.error) return emptyList()
+            RingPayloads.parseStepToday(rsp.payload, epochDay)
+        } else {
+            val detailReq = RingPayloads.buildDetailSportQueryPayload(daysAgo)
+            val detailFrames = command.collectUntil(
+                cmd = Opcodes.GET_STEP_SOMEDAY_DETAIL,
+                payload = detailReq,
+                shouldStop = { it.error || RingPayloads.isDetailSportEndPacket(it.payload) },
+                maxPackets = 98,
+                timeoutMs = STREAM_TIMEOUT_MS,
+            )
+            if (detailFrames.isNotEmpty() && detailFrames.none { it.error }) {
+                RingPayloads.parseDetailSportPackets(detailFrames.map { it.payload }, epochDay)
+            } else {
+                val req = byteArrayOf(daysAgo.toByte())
+                val totalFrames = command.collectUntil(
+                    cmd = Opcodes.GET_STEP_TOTAL_SOMEDAY,
+                    payload = req,
+                    shouldStop = { it.error || RingPayloads.isTotalSportEndPacket(it.payload) },
+                    maxPackets = 2,
+                    timeoutMs = STREAM_TIMEOUT_MS,
+                )
+                val packets = if (totalFrames.isEmpty()) {
+                    listOfNotNull(
+                        command.request(Opcodes.GET_STEP_TOTAL_SOMEDAY, req, STREAM_TIMEOUT_MS)
+                            ?.takeIf { !it.error }
+                            ?.payload,
+                    )
+                } else {
+                    totalFrames.filter { !it.error }.map { it.payload }
+                }
+                RingPayloads.parseTotalSportPackets(packets, epochDay)
+            }
+        } ?: return emptyList()
         val stored = day.copy(profileId = profileId)
         health.upsertSteps(profileId, listOf(stored))
         return listOf(stored)
@@ -175,6 +250,7 @@ class SyncEngine @Inject constructor(
             cmd = Opcodes.BP_TIMING_MONITOR_DATA,
             payload = null,
             shouldStop = { frame ->
+                if (frame.error) return@collectUntil true
                 val p = frame.payload
                 if (RingPayloads.isAutoBpEndPacket(p)) {
                     true
@@ -196,7 +272,8 @@ class SyncEngine @Inject constructor(
                 }
             },
             maxPackets = 12,
-        )
+            timeoutMs = STREAM_TIMEOUT_MS,
+        ).filter { !it.error }
         if (packets.isEmpty()) return emptyList()
 
         val currentYear = time.localClock().year
@@ -230,9 +307,10 @@ class SyncEngine @Inject constructor(
         val packets = command.collectUntil(
             cmd = Opcodes.GET_BAND_PRESSURE,
             payload = req,
-            shouldStop = { RingPayloads.isManualBpSentinel(it.payload) },
+            shouldStop = { it.error || RingPayloads.isManualBpSentinel(it.payload) },
             maxPackets = 50,
-        )
+            timeoutMs = 1_500L,
+        ).filter { !it.error }
         val readings = packets
             .mapNotNull { RingPayloads.parseManualBpPacket(it.payload) }
             .map { BloodPressure(profileId, it.epochMs, it.sbp, it.dbp, BpSource.MANUAL) }
@@ -240,27 +318,112 @@ class SyncEngine @Inject constructor(
         return readings
     }
 
-    private suspend fun pullHeartRate(profileId: Long, daysAgo: Int): List<HeartRateSample> {
-        // 0x15 request carries a day offset; the body is a run of 13-byte records.
-        val rsp = command.request(Opcodes.GET_HEART_RATE, ByteOrder.toLeBytes(daysAgo, 4)) ?: return emptyList()
-        val payload = rsp.payload
-        val count = payload.size / 13
-        val samples = (0 until count).mapNotNull { i ->
-            RingPayloads.parseHeartRateRecord(payload.copyOfRange(i * 13, i * 13 + 13))
-                ?.let { HeartRateSample(profileId, it.epochMs, it.bpm) }
+    private suspend fun pullHeartRate(
+        profileId: Long,
+        epochDay: Long,
+        daysAgo: Int,
+        time: TimeSource,
+    ): List<HeartRateSample> {
+        val req = if (daysAgo == 0) {
+            val nowMs = time.nowMillis()
+            val tzOffsetMs = java.util.TimeZone.getDefault().getOffset(nowMs)
+            RingPayloads.buildHeartRateQueryPayloadForToday(nowMs, tzOffsetMs)
+        } else {
+            RingPayloads.buildHeartRateQueryPayload(epochDay)
         }
+        var expectedPackets = -1
+        val frames = command.collectUntil(
+            cmd = Opcodes.GET_HEART_RATE,
+            payload = req,
+            shouldStop = { frame ->
+                if (frame.error) return@collectUntil true
+                val p = frame.payload
+                if (p.size >= 2 && (p[0].toInt() and 0xFF) == 0x00) {
+                    expectedPackets = p[1].toInt() and 0xFF
+                }
+                RingPayloads.isHeartRateEndPacket(p, expectedPackets, isToday = daysAgo == 0)
+            },
+            maxPackets = 26,
+            timeoutMs = STREAM_TIMEOUT_MS,
+        )
+        val packets = if (frames.isEmpty()) {
+            listOfNotNull(
+                command.request(Opcodes.GET_HEART_RATE, req, STREAM_TIMEOUT_MS)
+                    ?.takeIf { !it.error }
+                    ?.payload,
+            )
+        } else {
+            frames.filter { !it.error }.map { it.payload }
+        }
+        if (packets.isEmpty()) return emptyList()
+        val dayStartMs = epochDay * 86_400_000L
+        val samples = RingPayloads.parseHeartRateStream(packets, dayStartMs)
+            .map { HeartRateSample(profileId, it.epochMs, it.bpm) }
         if (samples.isNotEmpty()) health.upsertHeartRate(profileId, samples)
         return samples
     }
 
-    private suspend fun pullSleep(profileId: Long, epochDay: Long, daysAgo: Int): List<SleepSession> {
-        // Request mirrors the vendor: [dayOffset, 0x0F, startIdx=0, endIdx=0x5F] (full slot
-        // range in one shot). The device answers a 0x44 record; parseSleep decodes the
-        // first (main) record. daysAgo is capped by the ring (it rejects offsets > 29).
+    private suspend fun pullNewSleepProtocol(
+        profileId: Long,
+        todayEpochDay: Long,
+    ): List<SleepSession> {
+        // `LargeDataHandler.syncSleepList(dayOffset = -1)` (`0x27`, payload `[0xFF, 0x01]`).
+        val req = byteArrayOf(0xFF.toByte(), 0x01)
+        val rsp = command.request(Opcodes.NEW_SLEEP_PROTOCOL, req, STREAM_TIMEOUT_MS) ?: return emptyList()
+        if (rsp.error) return emptyList()
+        val parsedList = RingPayloads.parseNewSleepProtocolPayload(rsp.payload, todayEpochDay)
+        val sessions = mutableListOf<SleepSession>()
+        for (parsed in parsedList) {
+            val session = SleepSession(
+                profileId = profileId,
+                startEpoch = parsed.startEpochMs,
+                endEpoch = parsed.endEpochMs,
+                isNap = parsed.isNap,
+            )
+            val segments = parsed.stages.map {
+                SleepSegment(sessionId = 0, stage = it.stage, durationMin = it.durationMin)
+            }
+            health.upsertSleep(profileId, session, segments)
+            sessions.add(session)
+        }
+        return sessions
+    }
+
+    private suspend fun pullSleep(
+        profileId: Long,
+        epochDay: Long,
+        daysAgo: Int,
+    ): List<SleepSession> {
+        // Request mirrors the vendor `ReadSleepDetailsReq(daysAgo, 0, 0x5F)`:
+        // `[dayOffset, 0x0F, startIdx=0, endIdx=0x5F]`.
         if (daysAgo > 29) return emptyList()
         val req = byteArrayOf(daysAgo.toByte(), 0x0F, 0x00, 0x5F.toByte())
-        val rsp = command.request(Opcodes.GET_SLEEP, req) ?: return emptyList()
-        val parsed = RingPayloads.parseSleep(rsp.payload, epochDay) ?: return emptyList()
+        val frames = command.collectUntil(
+            cmd = Opcodes.GET_SLEEP,
+            payload = req,
+            shouldStop = { it.error || RingPayloads.isSleepDetailsEndPacket(it.payload) },
+            maxPackets = 98,
+            timeoutMs = STREAM_TIMEOUT_MS,
+        )
+        val packets = if (frames.isEmpty()) {
+            listOfNotNull(
+                command.request(Opcodes.GET_SLEEP, req, STREAM_TIMEOUT_MS)
+                    ?.takeIf { !it.error }
+                    ?.payload,
+            )
+        } else {
+            frames.filter { !it.error }.map { it.payload }
+        }
+        if (packets.isEmpty()) return emptyList()
+        val parsed = RingPayloads.parseSleepDetailsStream(
+            packets = packets,
+            dayStartEpochMsForDate = { y, m, d ->
+                runCatching {
+                    java.time.LocalDate.of(y, m, d).toEpochDay() * 86_400_000L
+                }.getOrDefault(epochDay * 86_400_000L)
+            },
+            fallbackEpochDay = epochDay,
+        ) ?: return emptyList()
         val session = SleepSession(
             profileId = profileId,
             startEpoch = parsed.startEpochMs,
@@ -272,6 +435,10 @@ class SyncEngine @Inject constructor(
         }
         health.upsertSleep(profileId, session, segments)
         return listOf(session)
+    }
+
+    private companion object {
+        const val STREAM_TIMEOUT_MS = 2_500L
     }
 }
 

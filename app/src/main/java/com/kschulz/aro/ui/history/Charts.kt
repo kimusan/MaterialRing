@@ -530,8 +530,8 @@ private data class StageTotals(
 private fun classifySleepStage(stageCode: Int): Int = when (stageCode) {
     1 -> 3 // Deep
     2 -> 2 // Light
-    3, 4 -> 1 // REM
-    else -> 0 // Awake
+    3 -> 1 // REM
+    else -> 0 // Awake (4 / 5 / 0)
 }
 
 private fun stageLabel(tier: Int): String = when (tier) {
