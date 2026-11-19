@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -148,9 +150,12 @@ private fun MainScaffold(
     hasPermissions: Boolean,
     onRequestPermissions: () -> Unit,
     onAddRing: () -> Unit,
+    homeViewModel: com.kschulz.aro.ui.home.HomeViewModel = hiltViewModel(),
 ) {
     var selected by remember { mutableIntStateOf(0) }
     var focusMetric by remember { mutableStateOf<com.kschulz.aro.ui.history.HistoryMetric?>(null) }
+    val syncing by homeViewModel.syncing.collectAsStateWithLifecycle()
+    val connectionState by homeViewModel.connectionState.collectAsStateWithLifecycle()
     val tabs = listOf(
         Tab("Home", Icons.Filled.Home),
         Tab("History", Icons.Filled.History),
@@ -158,7 +163,39 @@ private fun MainScaffold(
     )
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.app_name)) },
+                actions = {
+                    if (connectionState == com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED) {
+                        TextButton(
+                            onClick = { homeViewModel.reconnect() },
+                            enabled = !syncing,
+                        ) {
+                            Text("Reconnect")
+                        }
+                    }
+                    TextButton(
+                        onClick = { homeViewModel.syncNow() },
+                        enabled = !syncing,
+                    ) {
+                        if (syncing) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.padding(end = 6.dp).size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.Sync,
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = 6.dp).size(18.dp),
+                            )
+                        }
+                        Text(if (syncing) "Syncing" else "Sync")
+                    }
+                },
+            )
+        },
         bottomBar = {
             NavigationBar {
                 tabs.forEachIndexed { index, tab ->
@@ -204,6 +241,7 @@ private fun MainScaffold(
             val content = Modifier.weight(1f)
             when (selected) {
                 0 -> HomeScreen(
+                    viewModel = homeViewModel,
                     modifier = content,
                     onOpenHistory = { metric ->
                         focusMetric = metric

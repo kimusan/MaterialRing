@@ -268,36 +268,6 @@ fun HomeScreen(
                 }
             }
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                FilledTonalButton(onClick = { viewModel.syncNow() }, enabled = !syncing) {
-                    if (syncing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp).padding(end = 6.dp),
-                            strokeWidth = 2.dp,
-                        )
-                    } else {
-                        Icon(
-                            Icons.Filled.Sync,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp).padding(end = 6.dp),
-                        )
-                    }
-                    Text(if (syncing) "Syncing..." else "Sync now")
-                }
-
-                if (connectionState == ConnectionState.DISCONNECTED) {
-                    OutlinedButton(
-                        onClick = { viewModel.reconnect() },
-                        enabled = !syncing,
-                    ) {
-                        Text("Reconnect")
-                    }
-                }
-            }
-
             lastSync?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
