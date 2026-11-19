@@ -1,11 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- A minimalist ring: a single clean annulus centered in the 108dp canvas. -->
+
+    <!-- Soft grounding shadow behind the smart ring -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,30 A24,24 0 1,0 54.001,30 Z M54,38 A16,16 0 1,1 54.001,38 Z"
+        android:fillColor="#48020812"
+        android:pathData="M54,29 A27,27 0 1,0 54.001,29 Z M54,39 A17,17 0 1,1 54.001,39 Z"
         android:fillType="evenOdd" />
+
+    <!-- Primary brushed-titanium / anodized cyan metallic smart ring body (r=26 outer, r=17 inner) -->
+    <path
+        android:pathData="M54,28 A26,26 0 1,0 54.001,28 Z M54,37 A17,17 0 1,1 54.001,37 Z"
+        android:fillType="evenOdd">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="30"
+                android:startY="28"
+                android:endX="78"
+                android:endY="80">
+                <item android:color="#F4FCFF" android:offset="0.0" />
+                <item android:color="#7CE7F8" android:offset="0.28" />
+                <item android:color="#1CA9D4" android:offset="0.58" />
+                <item android:color="#0D5782" android:offset="0.82" />
+                <item android:color="#49C6E5" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Inner chamfer bevel for realistic metallic 3D depth -->
+    <path
+        android:pathData="M54,35.5 A18.5,18.5 0 1,0 54.001,35.5 Z M54,37.8 A16.2,16.2 0 1,1 54.001,37.8 Z"
+        android:fillType="evenOdd">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="36"
+                android:startY="36"
+                android:endX="72"
+                android:endY="72">
+                <item android:color="#082742" android:offset="0.0" />
+                <item android:color="#196A96" android:offset="0.55" />
+                <item android:color="#A6F0FF" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle top-left specular rim glint -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#CCFFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M34.5,39.5 A24.2,24.2 0 0,1 65.5,32.5" />
+
+    <!-- Subtle biometric pulse / PPG wave centered inside the ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M41.5,54 L46.5,54 L49.5,46.5 L53.2,61.5 L56.8,50.5 L59.3,54 L66.5,54">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="41"
+                android:startY="54"
+                android:endX="67"
+                android:endY="54">
+                <item android:color="#4DE6C9" android:offset="0.0" />
+                <item android:color="#ECFEFF" android:offset="0.5" />
+                <item android:color="#38BDF8" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>
