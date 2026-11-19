@@ -150,6 +150,7 @@ private fun MainScaffold(
     onAddRing: () -> Unit,
 ) {
     var selected by remember { mutableIntStateOf(0) }
+    var focusMetric by remember { mutableStateOf<com.kschulz.aro.ui.history.HistoryMetric?>(null) }
     val tabs = listOf(
         Tab("Home", Icons.Filled.Home),
         Tab("History", Icons.Filled.History),
@@ -202,8 +203,18 @@ private fun MainScaffold(
             }
             val content = Modifier.weight(1f)
             when (selected) {
-                0 -> HomeScreen(modifier = content)
-                1 -> HistoryScreen(modifier = content)
+                0 -> HomeScreen(
+                    modifier = content,
+                    onOpenHistory = { metric ->
+                        focusMetric = metric
+                        selected = 1
+                    },
+                )
+                1 -> HistoryScreen(
+                    modifier = content,
+                    focusMetric = focusMetric,
+                    onFocusMetricConsumed = { focusMetric = null },
+                )
                 2 -> SettingsScreen(modifier = content, onAddRing = onAddRing)
             }
         }

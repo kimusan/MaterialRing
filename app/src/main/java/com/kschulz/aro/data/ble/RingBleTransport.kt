@@ -283,17 +283,19 @@ class RingBleTransport @Inject constructor(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     _connectionState.value = ConnectionState.CONNECTING
-                    // The vendor SDK requests a 256-byte MTU on connect (Realsil
-                    // BluetoothGattClientImpl). Wait for onMtuChanged before calling
-                    // discoverServices so Android does not drop the discovery request.
-                    AroDbg.d("requestMtu($REQUESTED_MTU)")
-                    val mtuStarted = synchronized(gattLock) {
-                        try { g.requestMtu(REQUESTED_MTU) } catch (_: SecurityException) { false }
-                    }
-                    if (!mtuStarted) {
-                        AroDbg.d("requestMtu returned false, falling back to discoverServices")
-                        synchronized(gattLock) {
-                            try { g.discoverServices() } catch (_: SecurityException) {}
+                    // Matches Oudmon BleBaseControl$ConnectionGattCallback.smali: wait 500ms
+                    // after ACL connect before calling discoverServices() (and do not block
+                    // on requestMtu()).
+                    scope.launch {
+                        delay(500L)
+                        val started = synchronized(gattLock) {
+                            if (g !== gatt) return@launch
+                            AroDbg.d("discoverServices()")
+                            try { g.discoverServices() } catch (_: SecurityException) { false }
+                        }
+                        if (!started) {
+                            AroDbg.d("discoverServices() returned false, disconnecting")
+                            disconnect()
                         }
                     }
                 }
@@ -316,9 +318,6 @@ class RingBleTransport @Inject constructor(
                 if (g !== gatt) return
             }
             AroDbg.d("onMtuChanged mtu=$mtu status=$status")
-            synchronized(gattLock) {
-                try { g.discoverServices() } catch (_: SecurityException) {}
-            }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {

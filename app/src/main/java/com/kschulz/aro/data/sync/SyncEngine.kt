@@ -199,9 +199,33 @@ class SyncEngine @Inject constructor(
 
     private suspend fun pullStepsForDay(profileId: Long, epochDay: Long, daysAgo: Int): List<StepDay> {
         val day = if (daysAgo == 0) {
-            val rsp = command.request(Opcodes.GET_STEP_TODAY, null) ?: return emptyList()
-            if (rsp.error) return emptyList()
-            RingPayloads.parseStepToday(rsp.payload, epochDay)
+            val todayTotal = command.request(Opcodes.GET_STEP_TODAY, null)
+                ?.takeIf { !it.error }
+                ?.let { RingPayloads.parseStepToday(it.payload, epochDay) }
+            if (todayTotal != null && todayTotal.steps > 0) {
+                todayTotal
+            } else {
+                // Mirror QRing StepDetailRepository: also check 0x43 (15-min step detail)
+                // for today when 0x48 reports 0 steps, keeping whichever has more steps.
+                val detailReq = RingPayloads.buildDetailSportQueryPayload(0)
+                val detailFrames = command.collectUntil(
+                    cmd = Opcodes.GET_STEP_SOMEDAY_DETAIL,
+                    payload = detailReq,
+                    shouldStop = { it.error || RingPayloads.isDetailSportEndPacket(it.payload) },
+                    maxPackets = 98,
+                    timeoutMs = STREAM_TIMEOUT_MS,
+                )
+                val detailDay = if (detailFrames.isNotEmpty() && detailFrames.none { it.error }) {
+                    RingPayloads.parseDetailSportPackets(detailFrames.map { it.payload }, epochDay)
+                } else {
+                    null
+                }
+                if (detailDay != null && detailDay.steps > (todayTotal?.steps ?: 0)) {
+                    detailDay
+                } else {
+                    todayTotal
+                }
+            }
         } else {
             val detailReq = RingPayloads.buildDetailSportQueryPayload(daysAgo)
             val detailFrames = command.collectUntil(

@@ -60,7 +60,11 @@ import com.kschulz.aro.ui.profile.profileSummaryLine
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = Modifier) {
+fun HomeScreen(
+    viewModel: HomeViewModel = hiltViewModel(),
+    modifier: Modifier = Modifier,
+    onOpenHistory: (com.kschulz.aro.ui.history.HistoryMetric) -> Unit = {},
+) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val connected by viewModel.connected.collectAsStateWithLifecycle()
     val boundRing by viewModel.boundRing.collectAsStateWithLifecycle()
@@ -319,7 +323,10 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
             val calToday = today?.calories ?: 0
             val distToday = today?.distanceMeters ?: 0
 
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.STEPS) },
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -372,6 +379,7 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
                     live = liveHr > 0,
                     actionLabel = if (measurement.active) null else "Measure",
                     onAction = { viewModel.startHrMeasurement() },
+                    onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.HEART_RATE) },
                 )
                 MetricTile(
                     modifier = Modifier.weight(1f),
@@ -384,6 +392,7 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
                     },
                     actionLabel = if (measurement.active) null else "Measure",
                     onAction = { viewModel.startBpMeasurement() },
+                    onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.BLOOD_PRESSURE) },
                 )
             }
 
@@ -394,6 +403,7 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
                     title = "Steps today",
                     value = today?.let { "${it.steps} steps" } ?: "No data",
                     subtitle = today?.let { "${it.calories} kcal • ${it.distanceMeters} m (goal $stepGoal)" },
+                    onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.STEPS) },
                 )
                 MetricTile(
                     modifier = Modifier.weight(1f),
@@ -404,10 +414,14 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
                         "${min / 60}h ${min % 60}m"
                     } ?: "No data",
                     subtitle = activeProfile?.let { "Goal ${it.goalSleepMinutes / 60}h" },
+                    onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.SLEEP) },
                 )
             }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.BODY_BATTERY) },
+            ) {
                 Column(Modifier.padding(16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -573,8 +587,9 @@ private fun MetricTile(
     live: Boolean = false,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
+    onClick: () -> Unit = {},
 ) {
-    Card(modifier = modifier) {
+    Card(modifier = modifier, onClick = onClick) {
         Column(Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),

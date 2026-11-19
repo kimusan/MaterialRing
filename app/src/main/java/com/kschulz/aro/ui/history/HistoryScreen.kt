@@ -42,9 +42,22 @@ import java.util.Locale
 private val FullDateFmt = DateTimeFormatter.ofPattern("EEE, MMM d, yyyy", Locale.US)
 private val RangeDateFmt = DateTimeFormatter.ofPattern("MMM d", Locale.US)
 
+enum class HistoryMetric(val listIndex: Int) {
+    STEPS(2),
+    SLEEP(3),
+    HEART_RATE(4),
+    BLOOD_PRESSURE(5),
+    BODY_BATTERY(6),
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryScreen(viewModel: HistoryViewModel = hiltViewModel(), modifier: Modifier = Modifier) {
+fun HistoryScreen(
+    viewModel: HistoryViewModel = hiltViewModel(),
+    modifier: Modifier = Modifier,
+    focusMetric: HistoryMetric? = null,
+    onFocusMetricConsumed: () -> Unit = {},
+) {
     val period by viewModel.period.collectAsStateWithLifecycle()
     val anchorDay by viewModel.anchorEpochDay.collectAsStateWithLifecycle()
     val steps by viewModel.steps.collectAsStateWithLifecycle()
@@ -58,7 +71,15 @@ fun HistoryScreen(viewModel: HistoryViewModel = hiltViewModel(), modifier: Modif
     val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
     val syncing by viewModel.syncing.collectAsStateWithLifecycle()
 
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val pullRefreshState = rememberPullToRefreshState()
+
+    LaunchedEffect(focusMetric) {
+        if (focusMetric != null) {
+            listState.animateScrollToItem(focusMetric.listIndex)
+            onFocusMetricConsumed()
+        }
+    }
 
     if (pullRefreshState.isRefreshing) {
         LaunchedEffect(true) {
@@ -82,6 +103,7 @@ fun HistoryScreen(viewModel: HistoryViewModel = hiltViewModel(), modifier: Modif
             .nestedScroll(pullRefreshState.nestedScrollConnection),
     ) {
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
