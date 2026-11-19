@@ -21,6 +21,7 @@ object DatabaseModule {
                 AroDatabase.MIGRATION_1_2,
                 AroDatabase.MIGRATION_2_3,
                 AroDatabase.MIGRATION_3_4,
+                AroDatabase.MIGRATION_4_5,
             )
             .fallbackToDestructiveMigration()
             .build()
@@ -51,4 +52,10 @@ object DatabaseModule {
 
     @Provides
     fun provideSpo2Dao(db: AroDatabase) = db.spo2Dao()
+
+    @Provides
+    fun provideTemperatureDao(db: AroDatabase) = db.temperatureDao()
+
+    @Provides
+    fun provideStressDao(db: AroDatabase) = db.stressDao()
 }

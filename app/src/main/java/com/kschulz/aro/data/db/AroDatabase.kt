@@ -15,6 +15,8 @@ import com.kschulz.aro.data.model.SleepSegment
 import com.kschulz.aro.data.model.SleepSession
 import com.kschulz.aro.data.model.Spo2Sample
 import com.kschulz.aro.data.model.StepDay
+import com.kschulz.aro.data.model.StressSample
+import com.kschulz.aro.data.model.TemperatureSample
 
 @Database(
     entities = [
@@ -28,8 +30,10 @@ import com.kschulz.aro.data.model.StepDay
         BloodPressure::class,
         BodyBatteryPoint::class,
         Spo2Sample::class,
+        TemperatureSample::class,
+        StressSample::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 @TypeConverters(BpSourceConverter::class)
@@ -43,6 +47,8 @@ abstract class AroDatabase : RoomDatabase() {
     abstract fun bloodPressureDao(): BloodPressureDao
     abstract fun bodyBatteryDao(): BodyBatteryDao
     abstract fun spo2Dao(): Spo2Dao
+    abstract fun temperatureDao(): TemperatureDao
+    abstract fun stressDao(): StressDao
 
     companion object {
         const val NAME = "aro.db"
@@ -82,6 +88,26 @@ abstract class AroDatabase : RoomDatabase() {
                         "`percent` INTEGER NOT NULL, " +
                         "`minPercent` INTEGER NOT NULL, " +
                         "`maxPercent` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`profileId`, `epochMs`))",
+                )
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `temperature_samples` (" +
+                        "`profileId` INTEGER NOT NULL, " +
+                        "`epochMs` INTEGER NOT NULL, " +
+                        "`surfaceCelsius` REAL NOT NULL, " +
+                        "`bodyCelsius` REAL NOT NULL, " +
+                        "PRIMARY KEY(`profileId`, `epochMs`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `stress_samples` (" +
+                        "`profileId` INTEGER NOT NULL, " +
+                        "`epochMs` INTEGER NOT NULL, " +
+                        "`score` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`profileId`, `epochMs`))",
                 )
             }

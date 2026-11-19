@@ -99,6 +99,17 @@ class HomeViewModel @Inject constructor(
         health.observeLatestSpo2()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    val latestTemperature: StateFlow<com.kschulz.aro.data.model.TemperatureSample?> =
+        health.observeLatestTemperature()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val latestStress: StateFlow<com.kschulz.aro.data.model.StressSample?> =
+        health.observeLatestStress()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val activeProtocol: StateFlow<com.kschulz.aro.data.ble.RingProtocol> =
+        command.activeProtocolFlow
+
     val latestSleep: StateFlow<SleepSession?> =
         health.observeLatestMainSleep()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -230,6 +241,53 @@ class HomeViewModel @Inject constructor(
 
     fun startSpo2Measurement() {
         startLiveMeasurement(RingPayloads.MEASURE_TYPE_SPO2)
+    }
+
+    /** Live dual-thermistor temperature measurement for SMART_RING / JRing (0x37 start/stop, 0x38 result). */
+    fun startTemperatureMeasurement() {
+        measurementJob?.cancel()
+        measurementJob = viewModelScope.launch {
+            val profileId = settings.observeActiveProfileId().first()
+            if (profileId == SettingsRepository.NO_PROFILE) return@launch
+            if (!ensureConnected()) {
+                _lastSync.value = "Ring not connected. Place ring nearby and try again."
+                return@launch
+            }
+            if (command.activeProtocol != com.kschulz.aro.data.ble.RingProtocol.JRING) {
+                _lastSync.value = "Temperature sensor is supported on SMART_RING (JRing) devices."
+                return@launch
+            }
+            _lastSync.value = "Measuring temperature..."
+            command.send(
+                com.kschulz.aro.data.ble.JRingProtocol.CMD_TEMP_MODE,
+                com.kschulz.aro.data.ble.JRingProtocol.buildTemperatureModePayload(true),
+            )
+            val reading = withTimeoutOrNull(10_000L) {
+                command.liveTemperatures.first()
+            }
+            command.send(
+                com.kschulz.aro.data.ble.JRingProtocol.CMD_TEMP_MODE,
+                com.kschulz.aro.data.ble.JRingProtocol.buildTemperatureModePayload(false),
+            )
+            if (reading != null) {
+                val nowMs = time.nowMillis()
+                health.upsertTemperature(
+                    profileId,
+                    listOf(
+                        com.kschulz.aro.data.model.TemperatureSample(
+                            profileId = profileId,
+                            epochMs = nowMs,
+                            surfaceCelsius = reading.surfaceCelsius,
+                            bodyCelsius = reading.bodyCelsius,
+                        ),
+                    ),
+                )
+                _lastSync.value = "Temperature: %.2f °C body (%.1f °C skin)"
+                    .format(reading.bodyCelsius, reading.surfaceCelsius)
+            } else {
+                _lastSync.value = "Temperature measurement timed out. Ensure ring is worn snugly."
+            }
+        }
     }
 
     fun stopMeasurement() {

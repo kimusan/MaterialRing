@@ -166,6 +166,18 @@ class HistoryViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val stress: StateFlow<List<com.kschulz.aro.data.model.StressSample>> = windowFlow
+        .flatMapLatest { (from, to) ->
+            health.observeStressBetween(from * 86_400_000L, (to + 1) * 86_400_000L)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val temperature: StateFlow<List<com.kschulz.aro.data.model.TemperatureSample>> = windowFlow
+        .flatMapLatest { (from, to) ->
+            health.observeTemperatureBetween(from * 86_400_000L, (to + 1) * 86_400_000L)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     val bodyBattery: StateFlow<List<BodyBatteryPoint>> = windowFlow
         .flatMapLatest { (from, to) ->
             health.observeBodyBatteryBetween(from * 24L, (to + 1) * 24L - 1L)

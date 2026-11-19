@@ -35,6 +35,8 @@ class HealthRepository @Inject constructor(
     private val bloodPressure: BloodPressureDao,
     private val bodyBattery: BodyBatteryDao,
     private val spo2: Spo2Dao,
+    private val temperature: com.kschulz.aro.data.db.TemperatureDao,
+    private val stress: com.kschulz.aro.data.db.StressDao,
     private val settings: SettingsRepository,
 ) : HealthStore {
     // ----- Steps -----
@@ -136,6 +138,34 @@ class HealthRepository @Inject constructor(
 
     override suspend fun upsertSpo2(profileId: Long, samples: List<Spo2Sample>) {
         if (samples.isNotEmpty()) spo2.upsertAll(samples)
+    }
+
+    // ----- Temperature -----
+    fun observeTemperatureBetween(from: Long, to: Long): Flow<List<com.kschulz.aro.data.model.TemperatureSample>> =
+        scoped(emptyList()) { pid -> temperature.observeBetween(pid, from, to) }
+
+    fun observeLatestTemperature(): Flow<com.kschulz.aro.data.model.TemperatureSample?> =
+        scoped(null) { pid -> temperature.observeLatest(pid) }
+
+    override suspend fun upsertTemperature(
+        profileId: Long,
+        samples: List<com.kschulz.aro.data.model.TemperatureSample>,
+    ) {
+        if (samples.isNotEmpty()) temperature.upsertAll(samples)
+    }
+
+    // ----- Stress -----
+    fun observeStressBetween(from: Long, to: Long): Flow<List<com.kschulz.aro.data.model.StressSample>> =
+        scoped(emptyList()) { pid -> stress.observeBetween(pid, from, to) }
+
+    fun observeLatestStress(): Flow<com.kschulz.aro.data.model.StressSample?> =
+        scoped(null) { pid -> stress.observeLatest(pid) }
+
+    override suspend fun upsertStress(
+        profileId: Long,
+        samples: List<com.kschulz.aro.data.model.StressSample>,
+    ) {
+        if (samples.isNotEmpty()) stress.upsertAll(samples)
     }
 
     /** Runs [read] against the active profile, emitting [empty] when there is none. */

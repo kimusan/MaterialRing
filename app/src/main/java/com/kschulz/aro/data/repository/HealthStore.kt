@@ -19,4 +19,6 @@ interface HealthStore {
     suspend fun upsertHeartRate(profileId: Long, samples: List<HeartRateSample>)
     suspend fun upsertSleep(profileId: Long, session: SleepSession, segments: List<SleepSegment>)
     suspend fun upsertSpo2(profileId: Long, samples: List<Spo2Sample>) {}
+    suspend fun upsertTemperature(profileId: Long, samples: List<com.kschulz.aro.data.model.TemperatureSample>) {}
+    suspend fun upsertStress(profileId: Long, samples: List<com.kschulz.aro.data.model.StressSample>) {}
 }

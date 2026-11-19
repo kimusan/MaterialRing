@@ -75,6 +75,9 @@ fun HomeScreen(
     val today by viewModel.today.collectAsStateWithLifecycle()
     val bp by viewModel.latestBp.collectAsStateWithLifecycle()
     val spo2 by viewModel.latestSpo2.collectAsStateWithLifecycle()
+    val temperature by viewModel.latestTemperature.collectAsStateWithLifecycle()
+    val stress by viewModel.latestStress.collectAsStateWithLifecycle()
+    val activeProtocol by viewModel.activeProtocol.collectAsStateWithLifecycle()
     val sleep by viewModel.latestSleep.collectAsStateWithLifecycle()
     val batteryPoints by viewModel.bodyBattery.collectAsStateWithLifecycle()
     val activeProfile by viewModel.activeProfile.collectAsStateWithLifecycle()
@@ -423,6 +426,46 @@ fun HomeScreen(
                     onInfo = { infoTopic = MetricInfoTopic.SLEEP },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.SLEEP) },
                 )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                MetricTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Favorite,
+                    title = "Stress",
+                    value = stress?.let { "${it.score}/100" } ?: "No data",
+                    subtitle = stress?.let {
+                        when {
+                            it.score < 30 -> "Relaxed"
+                            it.score < 60 -> "Normal"
+                            it.score < 80 -> "Moderate"
+                            else -> "High"
+                        }
+                    } ?: "Derived from HR",
+                    onInfo = { infoTopic = MetricInfoTopic.STRESS },
+                    onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.STRESS) },
+                )
+                if (activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING || temperature != null) {
+                    MetricTile(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.Filled.Bloodtype,
+                        title = "Temperature",
+                        value = temperature?.let { "%.1f °C".format(it.bodyCelsius) } ?: "No reading",
+                        subtitle = temperature?.let { "Skin %.1f °C".format(it.surfaceCelsius) }
+                            ?: "SMART_RING sensor",
+                        actionLabel = if (
+                            !measurement.active &&
+                            activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING
+                        ) {
+                            "Measure"
+                        } else {
+                            null
+                        },
+                        onAction = { viewModel.startTemperatureMeasurement() },
+                        onInfo = { infoTopic = MetricInfoTopic.TEMPERATURE },
+                        onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.TEMPERATURE) },
+                    )
+                }
             }
 
             Card(

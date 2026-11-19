@@ -1418,6 +1418,123 @@ fun Spo2ChartCard(
     }
 }
 
+val StressOrange = Color(0xFFFF7043)
+val TempAmber = Color(0xFFFFA726)
+
+@Composable
+fun StressChartCard(
+    samples: List<com.kschulz.aro.data.model.StressSample>,
+    period: HistoryPeriod = HistoryPeriod.DAY,
+    modifier: Modifier = Modifier,
+) {
+    val sorted = remember(samples) { samples.sortedBy { it.epochMs } }
+    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+
+    ChartCard(
+        title = "Stress",
+        summary = if (sorted.isEmpty()) {
+            "Estimated from heart-rate patterns (1–100)"
+        } else {
+            val avg = sorted.map { it.score }.average().toInt()
+            "Latest ${sorted.last().score}/100  •  Avg $avg"
+        },
+        accentColor = StressOrange,
+        modifier = modifier,
+    ) {
+        if (sorted.isEmpty()) {
+            EmptyChartText()
+        } else {
+            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
+            Column {
+                Text(
+                    text = "${selected.score} / 100",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = StressOrange,
+                )
+                Text(
+                    text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            InteractiveBarChart(
+                values = sorted.map { it.score },
+                selectedIndex = selectedIdx,
+                onSelectIndex = { selectedIdx = it },
+                barColor = StressOrange,
+                fixedMax = 100,
+                height = 140.dp,
+                formatYLabel = { it.toString() },
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                StatMiniBox("Low", "${sorted.minOf { it.score }}", DistanceGreen, Modifier.weight(1f))
+                StatMiniBox("Avg", "${sorted.map { it.score }.average().toInt()}", StressOrange, Modifier.weight(1f))
+                StatMiniBox("Peak", "${sorted.maxOf { it.score }}", CalorieCrimson, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+fun TemperatureChartCard(
+    samples: List<com.kschulz.aro.data.model.TemperatureSample>,
+    period: HistoryPeriod = HistoryPeriod.DAY,
+    modifier: Modifier = Modifier,
+) {
+    val sorted = remember(samples) { samples.sortedBy { it.epochMs } }
+    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+
+    ChartCard(
+        title = "Temperature",
+        summary = if (sorted.isEmpty()) {
+            "SMART_RING dual-thermistor body & skin temp"
+        } else {
+            val latest = sorted.last()
+            "Latest %.1f °C body  •  %.1f °C skin".format(latest.bodyCelsius, latest.surfaceCelsius)
+        },
+        accentColor = TempAmber,
+        modifier = modifier,
+    ) {
+        if (sorted.isEmpty()) {
+            EmptyChartText()
+        } else {
+            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
+            Column {
+                Text(
+                    text = "%.2f °C body (%.1f °C skin)".format(selected.bodyCelsius, selected.surfaceCelsius),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = TempAmber,
+                )
+                Text(
+                    text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            InteractiveBarChart(
+                values = sorted.map { (it.bodyCelsius * 10).toInt() },
+                selectedIndex = selectedIdx,
+                onSelectIndex = { selectedIdx = it },
+                barColor = TempAmber,
+                fixedMax = 420,
+                height = 140.dp,
+                formatYLabel = { "%.1f°".format(it / 10.0) },
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                StatMiniBox("Min", "%.1f °C".format(sorted.minOf { it.bodyCelsius }), TempAmber, Modifier.weight(1f))
+                StatMiniBox("Avg", "%.1f °C".format(sorted.map { it.bodyCelsius }.average()), TempAmber, Modifier.weight(1f))
+                StatMiniBox("Max", "%.1f °C".format(sorted.maxOf { it.bodyCelsius }), CalorieCrimson, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
 /**
  * Body Battery Card (`QBodyBatteryBarChartView.smali`):
  * - Daily 24-hour / Weekly / Monthly sky-blue (`#1296DB`) bar chart on a 0..100 scale with

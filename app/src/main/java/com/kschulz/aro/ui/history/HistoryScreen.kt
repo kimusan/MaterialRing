@@ -48,7 +48,9 @@ enum class HistoryMetric(val listIndex: Int) {
     HEART_RATE(4),
     BLOOD_PRESSURE(5),
     SPO2(6),
-    BODY_BATTERY(7),
+    STRESS(7),
+    TEMPERATURE(8),
+    BODY_BATTERY(9),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -68,6 +70,8 @@ fun HistoryScreen(
     val hr by viewModel.heartRate.collectAsStateWithLifecycle()
     val bp by viewModel.bloodPressure.collectAsStateWithLifecycle()
     val spo2 by viewModel.spo2.collectAsStateWithLifecycle()
+    val stress by viewModel.stress.collectAsStateWithLifecycle()
+    val temperature by viewModel.temperature.collectAsStateWithLifecycle()
     val bodyBattery by viewModel.bodyBattery.collectAsStateWithLifecycle()
     val profile by viewModel.activeProfile.collectAsStateWithLifecycle()
     val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
@@ -174,6 +178,20 @@ fun HistoryScreen(
             item {
                 Spo2ChartCard(
                     samples = spo2,
+                    period = period,
+                )
+            }
+
+            item {
+                StressChartCard(
+                    samples = stress,
+                    period = period,
+                )
+            }
+
+            item {
+                TemperatureChartCard(
+                    samples = temperature,
                     period = period,
                 )
             }

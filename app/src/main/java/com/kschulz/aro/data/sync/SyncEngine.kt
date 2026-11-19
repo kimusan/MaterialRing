@@ -312,6 +312,7 @@ class SyncEngine @Inject constructor(
             }
             if (parsedHr.isNotEmpty()) {
                 health.upsertHeartRate(profileId, parsedHr)
+                health.upsertStress(profileId, deriveStressFromHr(profileId, parsedHr))
                 hrCount += parsedHr.size
             }
 
@@ -561,8 +562,36 @@ class SyncEngine @Inject constructor(
         val dayStartMs = epochDay * 86_400_000L
         val samples = RingPayloads.parseHeartRateStream(packets, dayStartMs)
             .map { HeartRateSample(profileId, it.epochMs, it.bpm) }
-        if (samples.isNotEmpty()) health.upsertHeartRate(profileId, samples)
+        if (samples.isNotEmpty()) {
+            health.upsertHeartRate(profileId, samples)
+            health.upsertStress(profileId, deriveStressFromHr(profileId, samples))
+        }
         return samples
+    }
+
+    /**
+     * Estimate physiological stress (10..95) from heart-rate elevation above resting
+     * baseline (60 bpm), grouped by hour. Works identically for both Oudmon/QRing and
+     * JRing/SMART_RING devices.
+     */
+    private fun deriveStressFromHr(
+        profileId: Long,
+        samples: List<HeartRateSample>,
+    ): List<com.kschulz.aro.data.model.StressSample> {
+        val hourMs = 3_600_000L
+        return samples
+            .filter { it.bpm in 35..220 }
+            .groupBy { it.epochMs / hourMs }
+            .map { (epochHour, list) ->
+                val avgBpm = list.map { it.bpm }.average()
+                // Resting (~55-65 bpm) -> 18..28 (Relaxed); elevated (80-115 bpm) -> 45..85
+                val score = (22.0 + (avgBpm - 60.0) * 1.15).toInt().coerceIn(10, 95)
+                com.kschulz.aro.data.model.StressSample(
+                    profileId = profileId,
+                    epochMs = epochHour * hourMs,
+                    score = score,
+                )
+            }
     }
 
     private suspend fun pullNewSleepProtocol(
