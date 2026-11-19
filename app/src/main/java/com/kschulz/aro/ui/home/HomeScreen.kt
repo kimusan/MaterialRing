@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -86,6 +87,7 @@ fun HomeScreen(
     var showProfileSwitcher by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<Profile?>(null) }
     var isOnboardingEditor by remember { mutableStateOf(false) }
+    var infoTopic by remember { mutableStateOf<MetricInfoTopic?>(null) }
 
     val pullRefreshState = rememberPullToRefreshState()
 
@@ -106,6 +108,10 @@ fun HomeScreen(
     }
 
     LaunchedEffect(Unit) { viewModel.ensureDefaultProfile() }
+
+    infoTopic?.let { topic ->
+        MetricInfoDialog(topic = topic, onDismiss = { infoTopic = null })
+    }
 
     if (showProfileSwitcher) {
         ProfileSwitcherDialog(
@@ -300,40 +306,46 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.STEPS) },
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    com.kschulz.aro.ui.history.ConcentricActivityRings(
-                        stepsProgress = (stepsToday.toFloat() / stepGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
-                        caloriesProgress = (calToday.toFloat() / calGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
-                        distanceProgress = (distToday.toFloat() / distGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
-                        modifier = Modifier.size(96.dp),
-                    )
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
-                        Text("Today's activity", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            text = "$stepsToday / $stepGoal steps",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = com.kschulz.aro.ui.history.StepCyan,
+                        com.kschulz.aro.ui.history.ConcentricActivityRings(
+                            stepsProgress = (stepsToday.toFloat() / stepGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
+                            caloriesProgress = (calToday.toFloat() / calGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
+                            distanceProgress = (distToday.toFloat() / distGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
+                            modifier = Modifier.size(96.dp),
                         )
-                        Text(
-                            text = "$calToday / $calGoal kcal",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = com.kschulz.aro.ui.history.CalorieCrimson,
-                        )
-                        Text(
-                            text = "$distToday / $distGoal m",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = com.kschulz.aro.ui.history.DistanceGreen,
-                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text("Today's activity", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = "$stepsToday / $stepGoal steps",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = com.kschulz.aro.ui.history.StepCyan,
+                            )
+                            Text(
+                                text = "$calToday / $calGoal kcal",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = com.kschulz.aro.ui.history.CalorieCrimson,
+                            )
+                            Text(
+                                text = "$distToday / $distGoal m",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = com.kschulz.aro.ui.history.DistanceGreen,
+                            )
+                        }
                     }
+                    InfoBadgeButton(
+                        onClick = { infoTopic = MetricInfoTopic.ACTIVITY },
+                        modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
+                    )
                 }
             }
 
@@ -352,6 +364,7 @@ fun HomeScreen(
                     live = liveHr > 0,
                     actionLabel = if (measurement.active) null else "Measure",
                     onAction = { viewModel.startHrMeasurement() },
+                    onInfo = { infoTopic = MetricInfoTopic.HEART_RATE },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.HEART_RATE) },
                 )
                 MetricTile(
@@ -365,6 +378,7 @@ fun HomeScreen(
                     },
                     actionLabel = if (measurement.active) null else "Measure",
                     onAction = { viewModel.startBpMeasurement() },
+                    onInfo = { infoTopic = MetricInfoTopic.BLOOD_PRESSURE },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.BLOOD_PRESSURE) },
                 )
             }
@@ -383,6 +397,7 @@ fun HomeScreen(
                 } ?: "Tap Measure to read SpO2 from ring",
                 actionLabel = if (measurement.active) null else "Measure",
                 onAction = { viewModel.startSpo2Measurement() },
+                onInfo = { infoTopic = MetricInfoTopic.SPO2 },
                 onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.SPO2) },
             )
 
@@ -393,6 +408,7 @@ fun HomeScreen(
                     title = "Steps today",
                     value = today?.let { "${it.steps} steps" } ?: "No data",
                     subtitle = today?.let { "${it.calories} kcal • ${it.distanceMeters} m (goal $stepGoal)" },
+                    onInfo = { infoTopic = MetricInfoTopic.ACTIVITY },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.STEPS) },
                 )
                 MetricTile(
@@ -404,6 +420,7 @@ fun HomeScreen(
                         "${min / 60}h ${min % 60}m"
                     } ?: "No data",
                     subtitle = activeProfile?.let { "Goal ${it.goalSleepMinutes / 60}h" },
+                    onInfo = { infoTopic = MetricInfoTopic.SLEEP },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.SLEEP) },
                 )
             }
@@ -418,7 +435,7 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("Body battery", style = MaterialTheme.typography.titleMedium)
                             Text(
                                 "Derived wellness score, not a vital.",
@@ -426,13 +443,19 @@ fun HomeScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        if (batteryPoints.isNotEmpty()) {
-                            val latest = batteryPoints.last()
-                            Text(
-                                "${latest.score}/100",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = com.kschulz.aro.ui.history.BodyBatteryBlue,
-                            )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            if (batteryPoints.isNotEmpty()) {
+                                val latest = batteryPoints.last()
+                                Text(
+                                    "${latest.score}/100",
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    color = com.kschulz.aro.ui.history.BodyBatteryBlue,
+                                )
+                            }
+                            InfoBadgeButton(onClick = { infoTopic = MetricInfoTopic.BODY_BATTERY })
                         }
                     }
                     if (batteryPoints.isEmpty()) {
@@ -579,6 +602,24 @@ private fun sleepDurationMin(s: SleepSession): Int =
     ((s.endEpoch - s.startEpoch) / 60_000L).toInt()
 
 @Composable
+private fun InfoBadgeButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.material3.IconButton(
+        onClick = onClick,
+        modifier = modifier.size(28.dp),
+    ) {
+        Icon(
+            imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
+            contentDescription = "About this metric",
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun MetricTile(
     modifier: Modifier = Modifier,
     icon: ImageVector,
@@ -588,6 +629,7 @@ private fun MetricTile(
     live: Boolean = false,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
+    onInfo: (() -> Unit)? = null,
     onClick: () -> Unit = {},
 ) {
     Card(modifier = modifier, onClick = onClick) {
@@ -608,9 +650,14 @@ private fun MetricTile(
                         )
                     }
                 }
-                if (actionLabel != null && onAction != null) {
-                    TextButton(onClick = onAction) {
-                        Text(actionLabel)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (actionLabel != null && onAction != null) {
+                        TextButton(onClick = onAction) {
+                            Text(actionLabel)
+                        }
+                    }
+                    if (onInfo != null) {
+                        InfoBadgeButton(onClick = onInfo)
                     }
                 }
             }
