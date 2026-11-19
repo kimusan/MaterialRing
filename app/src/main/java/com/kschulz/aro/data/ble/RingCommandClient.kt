@@ -5,9 +5,13 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -15,7 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Concrete [RingCommand] over [RingBleTransport]. Encodes requests with the codec, routes
  * every decoded response to all waiters registered for that cmd, and exposes the always-on
- * real-time values (0x1E heart rate, 0x03 battery) as StateFlows.
+ * real-time values (0x1E heart rate, 0x03 battery, 0x69 live measurement packets) as Flows.
  */
 @Singleton
 class RingCommandClient @Inject constructor(
@@ -31,6 +35,12 @@ class RingCommandClient @Inject constructor(
 
     private val _batteryLevel = MutableStateFlow(-1)
     val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
+
+    private val _liveMeasurements = MutableSharedFlow<RingPayloads.LiveMeasurementPacket>(
+        extraBufferCapacity = 32,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val liveMeasurements: SharedFlow<RingPayloads.LiveMeasurementPacket> = _liveMeasurements.asSharedFlow()
 
     override val connectionState: StateFlow<ConnectionState>
         get() = transport.connectionState
@@ -61,6 +71,15 @@ class RingCommandClient @Inject constructor(
                 }
             }
         }
+    }
+
+    /** Write a command frame without waiting for a correlated response packet. */
+    suspend fun send(cmd: Int, payload: ByteArray? = null, timeoutMs: Long = 3_000L): Boolean {
+        if (!transport.isConnected) return false
+        AroDbg.d("send 0x${cmd.toString(16)} payload=${payload?.size ?: 0}B")
+        return withTimeoutOrNull(timeoutMs) {
+            transport.write(codec.encode(cmd, payload))
+        } == true
     }
 
     override suspend fun request(cmd: Int, payload: ByteArray?, timeoutMs: Long): ParsedFrame? {
@@ -150,6 +169,15 @@ class RingCommandClient @Inject constructor(
 
             Opcodes.GET_DEVICE_ELECTRICITY_VALUE ->
                 _batteryLevel.value = parseBattery(parsed.payload)
+
+            Opcodes.START_HEART_RATE -> {
+                RingPayloads.parseLiveMeasurementPacket(parsed.payload)?.let { pkt ->
+                    if (pkt.errCode == 0 && pkt.value > 0) {
+                        _realTimeHeartRate.value = pkt.value
+                    }
+                    _liveMeasurements.tryEmit(pkt)
+                }
+            }
         }
         val list = synchronized(lock) { waiters[parsed.cmd]?.toList() } ?: return
         for (channel in list) channel.trySend(parsed)

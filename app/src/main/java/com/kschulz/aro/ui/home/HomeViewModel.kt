@@ -7,8 +7,12 @@ import com.kschulz.aro.data.ble.ConnectionState
 import com.kschulz.aro.data.ble.Opcodes
 import com.kschulz.aro.data.ble.RingBleTransport
 import com.kschulz.aro.data.ble.RingCommandClient
+import com.kschulz.aro.data.ble.RingPayloads
 import com.kschulz.aro.data.model.BloodPressure
 import com.kschulz.aro.data.model.BodyBatteryPoint
+import com.kschulz.aro.data.model.BpSource
+import com.kschulz.aro.data.model.HeartRateSample
+import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.Ring
 import com.kschulz.aro.data.model.SleepSession
 import com.kschulz.aro.data.model.StepDay
@@ -22,6 +26,8 @@ import com.kschulz.aro.ui.device.BlePermissions
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +37,17 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+data class LiveMeasurementState(
+    val active: Boolean = false,
+    val type: Int = RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE,
+    val secondsRemaining: Int = 0,
+    val livePulse: Int = 0,
+    val liveSbp: Int = 0,
+    val liveDbp: Int = 0,
+    val statusMessage: String? = null,
+    val wearingError: Boolean = false,
+)
 
 /** The home dashboard: live vitals plus the latest stored readings for the active profile.
  *  Real-time values come straight from the command client; stored values are reactive Room
@@ -68,6 +85,10 @@ class HomeViewModel @Inject constructor(
         health.observeTodaySteps(todayEpochDay)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    val latestHr: StateFlow<HeartRateSample?> =
+        health.observeLatestHeartRate()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     val latestBp: StateFlow<BloodPressure?> =
         health.observeLatestBloodPressure()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -80,11 +101,11 @@ class HomeViewModel @Inject constructor(
         health.observeBodyBatteryBetween(todayEpochDay * 24 - 23, todayEpochDay * 24)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val activeProfile: StateFlow<com.kschulz.aro.data.model.Profile?> =
+    val activeProfile: StateFlow<Profile?> =
         profiles.observeActive()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    val allProfiles: StateFlow<List<com.kschulz.aro.data.model.Profile>> =
+    val allProfiles: StateFlow<List<Profile>> =
         profiles.observeAll()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -103,6 +124,10 @@ class HomeViewModel @Inject constructor(
     private val _lastSync = MutableStateFlow<String?>(null)
     val lastSync: StateFlow<String?> = _lastSync.asStateFlow()
 
+    private val _measurement = MutableStateFlow(LiveMeasurementState())
+    val measurement: StateFlow<LiveMeasurementState> = _measurement.asStateFlow()
+
+    private var measurementJob: Job? = null
     private var profileSeeded = false
 
     init {
@@ -151,7 +176,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun saveProfile(profile: com.kschulz.aro.data.model.Profile) {
+    fun saveProfile(profile: Profile) {
         if (profile.name.isBlank()) return
         viewModelScope.launch {
             val isNew = profile.id == 0L
@@ -166,6 +191,231 @@ class HomeViewModel @Inject constructor(
             }
             _lastSync.value = "Profile \"${profile.name}\" saved"
         }
+    }
+
+    fun startBpMeasurement() {
+        startLiveMeasurement(RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE)
+    }
+
+    fun startHrMeasurement() {
+        startLiveMeasurement(RingPayloads.MEASURE_TYPE_HEART_RATE)
+    }
+
+    fun stopMeasurement() {
+        val current = _measurement.value
+        measurementJob?.cancel()
+        measurementJob = null
+        if (current.active) {
+            viewModelScope.launch {
+                command.send(
+                    Opcodes.STOP_HEART_RATE,
+                    RingPayloads.buildStopMeasurementPayload(current.type, 0, 0),
+                )
+            }
+        }
+        _measurement.value = LiveMeasurementState()
+    }
+
+    private fun startLiveMeasurement(type: Int) {
+        measurementJob?.cancel()
+        measurementJob = viewModelScope.launch {
+            val profileId = settings.observeActiveProfileId().first()
+            if (profileId == SettingsRepository.NO_PROFILE) {
+                _lastSync.value = "No profile selected"
+                return@launch
+            }
+            if (!ensureConnected()) {
+                _measurement.value = LiveMeasurementState(
+                    active = false,
+                    type = type,
+                    statusMessage = "Ring not connected. Place ring nearby and try again.",
+                )
+                return@launch
+            }
+
+            val currentProfile = profiles.getById(profileId)
+            val currentYear = time.localClock().year
+            val age = currentProfile?.age(currentYear) ?: 30
+            val sbpBase = currentProfile?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE
+            val dbpBase = currentProfile?.dbpBaseline ?: Profile.DEFAULT_DBP_BASELINE
+
+            // Push user calibration baseline to the ring before starting BP measurement.
+            if (currentProfile != null && type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
+                engine.syncProfileSettings(currentProfile, time, useMetric.value)
+            }
+
+            _measurement.value = LiveMeasurementState(
+                active = true,
+                type = type,
+                secondsRemaining = MEASURE_DURATION_SECONDS,
+                statusMessage = if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
+                    "Measuring blood pressure... Keep your hand still at heart level."
+                } else {
+                    "Measuring heart rate... Keep your hand still."
+                },
+            )
+
+            var streamAbortError = false
+            val collectJob = launch {
+                command.liveMeasurements.collect { pkt ->
+                    if (pkt.type != type && pkt.type != 0) return@collect
+                    if (pkt.errCode != 0) {
+                        streamAbortError = true
+                        _measurement.value = _measurement.value.copy(
+                            active = false,
+                            wearingError = true,
+                            statusMessage = "Wearing error: make sure the ring sensors are snug against your finger.",
+                        )
+                        return@collect
+                    }
+                    val pulse = if (pkt.value > 0) pkt.value else _measurement.value.livePulse
+                    var sbp = _measurement.value.liveSbp
+                    var dbp = _measurement.value.liveDbp
+                    if (pkt.sbp > 0 && pkt.dbp > 0) {
+                        sbp = pkt.sbp
+                        dbp = pkt.dbp
+                    } else if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE && pulse > 0) {
+                        val (estSbp, estDbp) = RingPayloads.estimateBpFromPpgRaw(
+                            rawValue = pulse,
+                            age = age,
+                            sbpBaseline = sbpBase,
+                            dbpBaseline = dbpBase,
+                        )
+                        sbp = estSbp
+                        dbp = estDbp
+                    }
+                    _measurement.value = _measurement.value.copy(
+                        livePulse = pulse,
+                        liveSbp = sbp,
+                        liveDbp = dbp,
+                    )
+                }
+            }
+
+            command.send(
+                Opcodes.START_HEART_RATE,
+                RingPayloads.buildStartMeasurementPayload(type),
+            )
+
+            try {
+                for (sec in MEASURE_DURATION_SECONDS downTo 1) {
+                    if (streamAbortError || !command.isConnected) break
+                    val liveHrNow = liveHeartRate.value
+                    val curr = _measurement.value
+                    val updatedPulse = if (curr.livePulse > 0) curr.livePulse else liveHrNow
+                    var updatedSbp = curr.liveSbp
+                    var updatedDbp = curr.liveDbp
+                    if (
+                        type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE &&
+                        updatedSbp == 0 &&
+                        updatedPulse > 0
+                    ) {
+                        val (estSbp, estDbp) = RingPayloads.estimateBpFromPpgRaw(
+                            rawValue = updatedPulse,
+                            age = age,
+                            sbpBaseline = sbpBase,
+                            dbpBaseline = dbpBase,
+                        )
+                        updatedSbp = estSbp
+                        updatedDbp = estDbp
+                    }
+                    _measurement.value = curr.copy(
+                        secondsRemaining = sec,
+                        livePulse = updatedPulse,
+                        liveSbp = updatedSbp,
+                        liveDbp = updatedDbp,
+                    )
+                    delay(1_000L)
+                }
+
+                if (streamAbortError) {
+                    command.send(
+                        Opcodes.STOP_HEART_RATE,
+                        RingPayloads.buildStopMeasurementPayload(type, 0, 0),
+                    )
+                    return@launch
+                }
+
+                val nowMs = time.nowMillis()
+                val finalState = _measurement.value
+                val finalPulse = finalState.livePulse.takeIf { it > 0 } ?: liveHeartRate.value
+
+                if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
+                    val (finalSbp, finalDbp) = when {
+                        finalState.liveSbp > 0 && finalState.liveDbp > 0 ->
+                            finalState.liveSbp to finalState.liveDbp
+                        finalPulse > 0 ->
+                            RingPayloads.estimateBpFromPpgRaw(finalPulse, age, sbpBase, dbpBase)
+                        else ->
+                            sbpBase to dbpBase
+                    }
+                    command.send(
+                        Opcodes.STOP_HEART_RATE,
+                        RingPayloads.buildStopMeasurementPayload(type, finalSbp, finalDbp),
+                    )
+                    health.upsertBloodPressure(
+                        profileId,
+                        listOf(BloodPressure(profileId, nowMs, finalSbp, finalDbp, BpSource.MANUAL)),
+                    )
+                    if (finalPulse > 0) {
+                        health.upsertHeartRate(
+                            profileId,
+                            listOf(HeartRateSample(profileId, nowMs, finalPulse)),
+                        )
+                    }
+                    _measurement.value = finalState.copy(
+                        active = false,
+                        secondsRemaining = 0,
+                        liveSbp = finalSbp,
+                        liveDbp = finalDbp,
+                        livePulse = finalPulse,
+                        statusMessage = "Recorded manual BP: $finalSbp/$finalDbp mmHg" +
+                            (if (finalPulse > 0) " ($finalPulse bpm)" else ""),
+                    )
+                } else {
+                    command.send(
+                        Opcodes.STOP_HEART_RATE,
+                        RingPayloads.buildStopMeasurementPayload(type, finalPulse, 0),
+                    )
+                    if (finalPulse > 0) {
+                        health.upsertHeartRate(
+                            profileId,
+                            listOf(HeartRateSample(profileId, nowMs, finalPulse)),
+                        )
+                        _measurement.value = finalState.copy(
+                            active = false,
+                            secondsRemaining = 0,
+                            livePulse = finalPulse,
+                            statusMessage = "Recorded heart rate: $finalPulse bpm",
+                        )
+                    } else {
+                        _measurement.value = finalState.copy(
+                            active = false,
+                            secondsRemaining = 0,
+                            statusMessage = "No heart rate signal detected. Check ring placement.",
+                        )
+                    }
+                }
+            } finally {
+                collectJob.cancel()
+            }
+        }
+    }
+
+    private suspend fun ensureConnected(): Boolean {
+        if (command.isConnected) return true
+        val ring = devices.observeAll().first().firstOrNull() ?: return false
+        if (transport.connectionState.value != ConnectionState.CONNECTING) {
+            if (!transport.connect(ring.macAddress)) return false
+        }
+        val finalState = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+            transport.connectionState.first { it != ConnectionState.CONNECTING }
+        }
+        if (finalState != ConnectionState.CONNECTED) {
+            transport.disconnect()
+            return false
+        }
+        return true
     }
 
     fun reconnect() {
@@ -214,17 +464,7 @@ class HomeViewModel @Inject constructor(
                         return@launch
                     }
                     _lastSync.value = "Connecting to ${ring.displayName}..."
-                    if (transport.connectionState.value != ConnectionState.CONNECTING) {
-                        if (!transport.connect(ring.macAddress)) {
-                            _lastSync.value = "Bluetooth unavailable"
-                            return@launch
-                        }
-                    }
-                    val finalState = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
-                        transport.connectionState.first { it != ConnectionState.CONNECTING }
-                    }
-                    if (finalState != ConnectionState.CONNECTED) {
-                        transport.disconnect()
+                    if (!ensureConnected()) {
                         _lastSync.value = "Device not connected. Is the ring nearby?"
                         return@launch
                     }
@@ -247,8 +487,14 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        stopMeasurement()
+    }
+
     companion object {
         const val DEFAULT_PROFILE_NAME = "Me"
         private const val CONNECT_TIMEOUT_MS = 10_000L
+        private const val MEASURE_DURATION_SECONDS = 30
     }
 }

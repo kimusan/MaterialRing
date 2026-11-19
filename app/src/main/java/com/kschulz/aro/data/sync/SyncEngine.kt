@@ -68,10 +68,14 @@ class SyncEngine @Inject constructor(
         for (daysAgo in days) {
             val epochDay = time.epochDayForOffset(daysAgo)
             steps += pullStepsForDay(profileId, epochDay, daysAgo).size
-            bpReadings += pullManualBp(profileId).size
             hrSamples += pullHeartRate(profileId, daysAgo).size
             sleepSessions += pullSleep(profileId, epochDay, daysAgo).size
         }
+
+        // Blood pressure queries (0x0D auto-BP and 0x14 manual-BP) return buffered readings
+        // across days in one stream rather than taking a dayOffset.
+        bpReadings += pullAutoBp(profileId, time, profile).size
+        bpReadings += pullManualBp(profileId).size
 
         // Body battery is derived from what we just stored; recompute for the window.
         val windowStartHour = time.epochDayForOffset(days.maxOfOrNull { it } ?: 0) * 24
@@ -100,7 +104,8 @@ class SyncEngine @Inject constructor(
     }
 
     /**
-     * Push user profile personalization (0x0A) and target goals (0x21) to the connected ring.
+     * Push user profile personalization (0x0A), target goals (0x21), and 24h auto-BP
+     * monitoring schedule (0x0C) to the connected ring.
      */
     suspend fun syncProfileSettings(
         profile: Profile,
@@ -127,6 +132,9 @@ class SyncEngine @Inject constructor(
             goalSleepMinutes = profile.goalSleepMinutes,
         )
         command.request(Opcodes.TARGET_SETTING, targetPayload)
+
+        val autoBpSwitch = RingPayloads.buildAutoBpSwitchPayload(enabled = true, intervalMinutes = 60)
+        command.request(Opcodes.BP_TIMING_MONITOR_SWITCH, autoBpSwitch)
     }
 
     private suspend fun queryDistribution(): Int? {
@@ -156,13 +164,68 @@ class SyncEngine @Inject constructor(
         return listOf(stored)
     }
 
+    private suspend fun pullAutoBp(
+        profileId: Long,
+        time: TimeSource,
+        profile: Profile?,
+    ): List<BloodPressure> {
+        var expectedSlots = -1
+        var receivedValues = 0
+        val packets = command.collectUntil(
+            cmd = Opcodes.BP_TIMING_MONITOR_DATA,
+            payload = null,
+            shouldStop = { frame ->
+                val p = frame.payload
+                if (RingPayloads.isAutoBpEndPacket(p)) {
+                    true
+                } else {
+                    val type = p[0].toInt() and 0xFF
+                    if (type == 0x00 && p.size >= 11) {
+                        var bits = 0
+                        for (i in 5..10) {
+                            bits += Integer.bitCount(p[i].toInt() and 0xFF)
+                        }
+                        expectedSlots = bits
+                        expectedSlots <= 0
+                    } else if (type == 0x01 && p.size >= 2) {
+                        receivedValues += (p.size - 1)
+                        expectedSlots > 0 && receivedValues >= expectedSlots
+                    } else {
+                        false
+                    }
+                }
+            },
+            maxPackets = 12,
+        )
+        if (packets.isEmpty()) return emptyList()
+
+        val currentYear = time.localClock().year
+        val parsed = RingPayloads.parseAutoBpStream(
+            packets = packets.map { it.payload },
+            dayStartEpochMsForDate = { y, m, d ->
+                runCatching {
+                    java.time.LocalDate.of(y, m, d).toEpochDay() * 86_400_000L
+                }.getOrDefault(time.todayEpochDay() * 86_400_000L)
+            },
+            age = profile?.age(currentYear) ?: 30,
+            sbpBaseline = profile?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE,
+            dbpBaseline = profile?.dbpBaseline ?: Profile.DEFAULT_DBP_BASELINE,
+        )
+        if (parsed.isEmpty()) return emptyList()
+
+        val readings = parsed.map {
+            BloodPressure(profileId, it.epochMs, it.sbp, it.dbp, BpSource.AUTO)
+        }
+        health.upsertBloodPressure(profileId, readings)
+        // Acknowledge receipt (0x0E BpReadConformReq) so the ring clears its staging buffer.
+        command.request(Opcodes.BP_TIMING_MONITOR_CONFIRM, RingPayloads.buildAutoBpConfirmPayload(true))
+        return readings
+    }
+
     private suspend fun pullManualBp(profileId: Long): List<BloodPressure> {
-        // 0x14 request: utc_seconds(4, LE) | 0x00 | 0x32 (max 50 records).
-        val nowUtc = (System.currentTimeMillis() / 1000L).toInt()
-        val req = ByteArray(6)
-        ByteOrder.toLeBytes(nowUtc, 4).copyInto(req, 0)
-        req[4] = 0x00
-        req[5] = 0x32.toByte()
+        // 0x14 request (`ReadPressureReq(0L)` in vendor BloodPressureRepository):
+        // 4-byte LE timestamp = 0 | 0x00 | 0x32 (max 50 records).
+        val req = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x32.toByte())
 
         val packets = command.collectUntil(
             cmd = Opcodes.GET_BAND_PRESSURE,

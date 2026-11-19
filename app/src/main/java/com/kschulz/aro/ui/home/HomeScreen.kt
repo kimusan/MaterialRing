@@ -50,6 +50,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kschulz.aro.data.ble.ConnectionState
+import com.kschulz.aro.data.ble.RingPayloads
+import com.kschulz.aro.data.model.BpSource
 import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.SleepSession
 import com.kschulz.aro.ui.profile.ProfileEditorDialog
@@ -63,6 +65,7 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
     val connected by viewModel.connected.collectAsStateWithLifecycle()
     val boundRing by viewModel.boundRing.collectAsStateWithLifecycle()
     val liveHr by viewModel.liveHeartRate.collectAsStateWithLifecycle()
+    val latestHr by viewModel.latestHr.collectAsStateWithLifecycle()
     val battery by viewModel.battery.collectAsStateWithLifecycle()
     val today by viewModel.today.collectAsStateWithLifecycle()
     val bp by viewModel.latestBp.collectAsStateWithLifecycle()
@@ -73,6 +76,7 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
     val profile by viewModel.profileName.collectAsStateWithLifecycle()
     val syncing by viewModel.syncing.collectAsStateWithLifecycle()
     val lastSync by viewModel.lastSync.collectAsStateWithLifecycle()
+    val measurement by viewModel.measurement.collectAsStateWithLifecycle()
 
     var showProfileSwitcher by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<Profile?>(null) }
@@ -293,34 +297,68 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
+            if (measurement.active || measurement.statusMessage != null) {
+                LiveMeasurementCard(
+                    state = measurement,
+                    onStop = { viewModel.stopMeasurement() },
+                    onRetry = {
+                        if (measurement.type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
+                            viewModel.startBpMeasurement()
+                        } else {
+                            viewModel.startHrMeasurement()
+                        }
+                    },
+                )
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                val hrDisplay = when {
+                    liveHr > 0 -> "$liveHr bpm"
+                    latestHr != null -> "${latestHr!!.bpm} bpm"
+                    else -> "No reading"
+                }
                 MetricTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Favorite,
                     title = "Heart rate",
-                    value = if (liveHr > 0) "$liveHr bpm" else "No reading",
+                    value = hrDisplay,
+                    subtitle = if (liveHr > 0) "Live sensor" else latestHr?.let { "Last recorded" },
                     live = liveHr > 0,
+                    actionLabel = if (measurement.active) null else "Measure",
+                    onAction = { viewModel.startHrMeasurement() },
                 )
                 MetricTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Bloodtype,
                     title = "Blood pressure",
                     value = bp?.let { "${it.sbp}/${it.dbp} mmHg" } ?: "None",
+                    subtitle = bp?.let {
+                        val src = if (it.source == BpSource.MANUAL) "Manual" else "Auto"
+                        "$src • ${bpCategoryLabel(it.sbp, it.dbp)}"
+                    },
+                    actionLabel = if (measurement.active) null else "Measure",
+                    onAction = { viewModel.startBpMeasurement() },
                 )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                val stepGoal = activeProfile?.goalSteps ?: Profile.DEFAULT_GOAL_STEPS
                 MetricTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.FitnessCenter,
                     title = "Steps today",
                     value = today?.let { "${it.steps} steps" } ?: "No data",
+                    subtitle = today?.let { "${it.calories} kcal • ${it.distanceMeters} m (goal $stepGoal)" },
                 )
                 MetricTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Bedtime,
                     title = "Last night",
-                    value = sleep?.let { "${sleepDurationMin(it)} min" } ?: "No data",
+                    value = sleep?.let {
+                        val min = sleepDurationMin(it)
+                        "${min / 60}h ${min % 60}m"
+                    } ?: "No data",
+                    subtitle = activeProfile?.let { "Goal ${it.goalSleepMinutes / 60}h" },
                 )
             }
 
@@ -359,6 +397,108 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
     }
 }
 
+@Composable
+private fun LiveMeasurementCard(
+    state: LiveMeasurementState,
+    onStop: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    val isBp = state.type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (state.wearingError) {
+                MaterialTheme.colorScheme.errorContainer
+            } else {
+                MaterialTheme.colorScheme.primaryContainer
+            },
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (isBp) "Blood Pressure Measurement" else "Heart Rate Measurement",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (state.active) {
+                    Text(
+                        text = "${state.secondsRemaining}s",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+
+            if (state.active) {
+                LinearProgressIndicator(
+                    progress = { (30 - state.secondsRemaining).coerceIn(0, 30) / 30f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            val liveReadout = if (isBp) {
+                if (state.liveSbp > 0 && state.liveDbp > 0) {
+                    "${state.liveSbp}/${state.liveDbp} mmHg" +
+                        (if (state.livePulse > 0) "  •  ${state.livePulse} bpm" else "")
+                } else if (state.livePulse > 0) {
+                    "Pulse ${state.livePulse} bpm — estimating BP..."
+                } else {
+                    "Acquiring PPG signal..."
+                }
+            } else {
+                if (state.livePulse > 0) "${state.livePulse} bpm" else "Acquiring PPG signal..."
+            }
+
+            if (state.active || state.liveSbp > 0 || state.livePulse > 0) {
+                Text(
+                    text = liveReadout,
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+            }
+
+            state.statusMessage?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                if (state.active) {
+                    TextButton(onClick = onStop) {
+                        Text("Cancel")
+                    }
+                } else {
+                    TextButton(onClick = onRetry) {
+                        Text("Measure again")
+                    }
+                    TextButton(onClick = onStop) {
+                        Text("Dismiss")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun bpCategoryLabel(sbp: Int, dbp: Int): String = when {
+    sbp >= 140 || dbp >= 90 -> "High (Stage 2)"
+    sbp >= 130 || dbp >= 80 -> "High (Stage 1)"
+    sbp in 120..129 && dbp < 80 -> "Elevated"
+    sbp < 90 || dbp < 60 -> "Low"
+    else -> "Normal"
+}
+
 private fun sleepDurationMin(s: SleepSession): Int =
     ((s.endEpoch - s.startEpoch) / 60_000L).toInt()
 
@@ -368,19 +508,33 @@ private fun MetricTile(
     icon: ImageVector,
     title: String,
     value: String,
+    subtitle: String? = null,
     live: Boolean = false,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
 ) {
     Card(modifier = modifier) {
         Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                if (live) {
-                    Icon(
-                        Icons.Filled.FiberManualRecord,
-                        contentDescription = "Live",
-                        modifier = Modifier.padding(start = 4.dp),
-                        tint = MaterialTheme.colorScheme.error,
-                    )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    if (live) {
+                        Icon(
+                            Icons.Filled.FiberManualRecord,
+                            contentDescription = "Live",
+                            modifier = Modifier.padding(start = 4.dp),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+                if (actionLabel != null && onAction != null) {
+                    TextButton(onClick = onAction) {
+                        Text(actionLabel)
+                    }
                 }
             }
             Text(
@@ -389,6 +543,13 @@ private fun MetricTile(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(value, style = MaterialTheme.typography.headlineSmall)
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

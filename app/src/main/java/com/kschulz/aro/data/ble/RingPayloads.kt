@@ -13,7 +13,18 @@ object RingPayloads {
     // 0xFFFFFFFF read as a signed 4-byte big-endian Int is -1 (fromBeBytes returns Int).
     private const val MANUAL_BP_SENTINEL = 0xFFFFFFFF.toInt()
 
+    const val MEASURE_TYPE_HEART_RATE = 0x01
+    const val MEASURE_TYPE_BLOOD_PRESSURE = 0x02
+
     data class ManualBpReading(val epochMs: Long, val sbp: Int, val dbp: Int)
+    data class AutoBpReading(val epochMs: Long, val sbp: Int, val dbp: Int, val rawValue: Int)
+    data class LiveMeasurementPacket(
+        val type: Int,
+        val errCode: Int,
+        val value: Int,
+        val sbp: Int = 0,
+        val dbp: Int = 0,
+    )
     data class HeartRateRecord(val epochMs: Long, val bpm: Int)
     data class SleepStage(val stage: Int, val durationMin: Int)
     data class SleepParse(
@@ -188,18 +199,228 @@ object RingPayloads {
     }
 
     /**
-     * One 0x14 manual BP packet (re/PROTOCOL.md 7.2, big-endian ts, direct mmHg):
-     * ts[0..3] seconds, sbp[4], dbp[5]. Returns null on the sentinel or a short packet.
+     * One 0x14 manual BP packet (traced to `ReadBlePressureRsp.smali`):
+     * ts[0..3] big-endian seconds, followed by DBP and SBP in mmHg (`payload[4]` = dbp,
+     * `payload[5]` = sbp in `ReadBlePressureRsp.smali` lines 169-185). We normalize
+     * `sbp = maxOf(b4, b5)` and `dbp = minOf(b4, b5)` so systolic is always the higher
+     * pressure regardless of firmware byte ordering.
      */
     fun parseManualBpPacket(payload: ByteArray): ManualBpReading? {
         if (payload.size < 6) return null
         if (isManualBpSentinel(payload)) return null
         val tsSeconds = ByteOrder.fromBeBytes(payload, 0, 4)
-        if (tsSeconds == MANUAL_BP_SENTINEL) return null
+        if (tsSeconds == MANUAL_BP_SENTINEL || tsSeconds <= 0) return null
+        val b4 = payload[4].toInt() and 0xFF
+        val b5 = payload[5].toInt() and 0xFF
+        val sbp = maxOf(b4, b5)
+        val dbp = minOf(b4, b5)
+        if (sbp <= 0 || dbp <= 0 || sbp == dbp) return null
         return ManualBpReading(
             epochMs = tsSeconds.toLong() * 1000L,
-            sbp = payload[4].toInt() and 0xFF,
-            dbp = payload[5].toInt() and 0xFF,
+            sbp = sbp,
+            dbp = dbp,
+        )
+    }
+
+    /**
+     * 0x0C BP_TIMING_MONITOR_SWITCH (`BpSettingReq.getWriteInstance` in smali).
+     * Enables/disables 24-hour automatic blood pressure monitoring at [intervalMinutes].
+     */
+    fun buildAutoBpSwitchPayload(
+        enabled: Boolean = true,
+        startHour: Int = 0,
+        startMinute: Int = 0,
+        endHour: Int = 23,
+        endMinute: Int = 59,
+        intervalMinutes: Int = 60,
+    ): ByteArray = byteArrayOf(
+        0x02,
+        if (enabled) 0x01 else 0x00,
+        startHour.coerceIn(0, 23).toByte(),
+        startMinute.coerceIn(0, 59).toByte(),
+        endHour.coerceIn(0, 23).toByte(),
+        endMinute.coerceIn(0, 59).toByte(),
+        intervalMinutes.coerceIn(15, 120).toByte(),
+    )
+
+    /**
+     * 0x0E BP_TIMING_MONITOR_CONFIRM (`BpReadConformReq` in smali).
+     * Sent after reading 0x0D auto-BP data to acknowledge receipt (`0x00` = success).
+     */
+    fun buildAutoBpConfirmPayload(success: Boolean = true): ByteArray =
+        byteArrayOf(if (success) 0x00 else 0x01)
+
+    /**
+     * True when a 0x0D (`BpDataRsp`) packet signals the end of the auto-BP stream.
+     * In `BpDataRsp.acceptData`, `(payload[0] & 0xFF) == 0xFF` or a header with 0 set bits
+     * terminates collection.
+     */
+    fun isAutoBpEndPacket(payload: ByteArray): Boolean {
+        if (payload.isEmpty()) return true
+        val type = payload[0].toInt() and 0xFF
+        if (type == 0xFF) return true
+        if (type == 0x00 && payload.size >= 11) {
+            val hasAnyBit = (5..10).any { (payload[it].toInt() and 0xFF) != 0 }
+            return !hasAnyBit
+        }
+        return false
+    }
+
+    /**
+     * Parses a multi-packet 0x0D (`BpDataRsp`) auto-BP stream and converts each slot's raw
+     * PPG value to `(sbp, dbp)` using the deterministic port of `CalcBloodPressureByHeart`
+     * calibrated to the active profile's [age], [sbpBaseline], and [dbpBaseline].
+     *
+     * Header packet (`payload[0] == 0x00`, size >= 11):
+     *   [1] year - 2000, [2] month (1..12), [3] day (1..31), [4] timeDelayMinutes,
+     *   [5..10] 48-bit slot bitmap.
+     * Value packets (`payload[0] == 0x01`, size >= 2):
+     *   [1..n] up to 13 raw bytes per packet corresponding to the set bitmap slots.
+     */
+    fun parseAutoBpStream(
+        packets: List<ByteArray>,
+        dayStartEpochMsForDate: (year: Int, month: Int, day: Int) -> Long,
+        age: Int = 30,
+        sbpBaseline: Int = Profile.DEFAULT_SBP_BASELINE,
+        dbpBaseline: Int = Profile.DEFAULT_DBP_BASELINE,
+    ): List<AutoBpReading> {
+        val header = packets.firstOrNull { it.size >= 11 && (it[0].toInt() and 0xFF) == 0x00 }
+            ?: return emptyList()
+        val year = (header[1].toInt() and 0xFF) + 2000
+        val month = header[2].toInt() and 0xFF
+        val day = header[3].toInt() and 0xFF
+        if (month !in 1..12 || day !in 1..31) return emptyList()
+        val timeDelay = (header[4].toInt() and 0xFF).takeIf { it > 0 } ?: 30
+
+        val slotMinutes = mutableListOf<Int>()
+        for (byteIdx in 0 until 6) {
+            val mask = header[5 + byteIdx].toInt() and 0xFF
+            for (bit in 0 until 8) {
+                if (((mask ushr bit) and 1) == 1) {
+                    val slotIdx = byteIdx * 8 + bit
+                    slotMinutes.add(slotIdx * timeDelay)
+                }
+            }
+        }
+        if (slotMinutes.isEmpty()) return emptyList()
+
+        val rawValues = mutableListOf<Int>()
+        for (pkt in packets) {
+            if (pkt.size >= 2 && (pkt[0].toInt() and 0xFF) == 0x01) {
+                for (i in 1 until pkt.size) {
+                    rawValues.add(pkt[i].toInt() and 0xFF)
+                }
+            }
+        }
+
+        val dayStartMs = dayStartEpochMsForDate(year, month, day)
+        val out = mutableListOf<AutoBpReading>()
+        val count = minOf(slotMinutes.size, rawValues.size)
+        for (i in 0 until count) {
+            val raw = rawValues[i]
+            if (raw <= 0 || raw == 0xFF) continue
+            val (sbp, dbp) = estimateBpFromPpgRaw(
+                rawValue = raw,
+                age = age,
+                sbpBaseline = sbpBaseline,
+                dbpBaseline = dbpBaseline,
+            )
+            val epochMs = dayStartMs + slotMinutes[i] * 60_000L
+            out.add(AutoBpReading(epochMs = epochMs, sbp = sbp, dbp = dbp, rawValue = raw))
+        }
+        return out
+    }
+
+    /**
+     * Deterministic port of the vendor's `CalcBloodPressureByHeart.smali` +
+     * `BloodPressureRepository$syncAutoBp$1$1$1$1.smali`, anchored to the user's calibrated
+     * [sbpBaseline] / [dbpBaseline] and [age].
+     *
+     * In the vendor DEX:
+     * - Raw values <= 50 are mapped into the 70..74 resting range.
+     * - SBP scales by `(hr - 65) * 0.45f` around the age/profile baseline and is clamped to
+     *   a physiological window (`90..165` mmHg).
+     * - DBP preserves the profile's pulse-pressure differential (`sbpBaseline - dbpBaseline`,
+     *   default ~40 mmHg) with 55% of the systolic delta, clamped to `55..105` mmHg.
+     */
+    fun estimateBpFromPpgRaw(
+        rawValue: Int,
+        age: Int = 30,
+        sbpBaseline: Int = Profile.DEFAULT_SBP_BASELINE,
+        dbpBaseline: Int = Profile.DEFAULT_DBP_BASELINE,
+    ): Pair<Int, Int> {
+        val effectiveHr = if (rawValue <= 50) {
+            70 + (rawValue.coerceAtLeast(0) % 5)
+        } else {
+            rawValue.coerceIn(51, 180)
+        }
+        val ageOffset = if (sbpBaseline == Profile.DEFAULT_SBP_BASELINE) {
+            ((age.coerceIn(15, 95) - 35) * 0.25f).toInt().coerceIn(-6, 12)
+        } else {
+            0
+        }
+        val baseSbp = (sbpBaseline + ageOffset).coerceIn(90, 170)
+        val sbpDelta = ((effectiveHr - 65) * 0.45f).toInt()
+        val sbp = (baseSbp + sbpDelta).coerceIn(90, 165)
+
+        val basePulsePressure = (sbpBaseline - dbpBaseline).coerceIn(28, 65)
+        val dbpDelta = (sbpDelta * 0.55f).toInt()
+        val dbp = (baseSbp - basePulsePressure + dbpDelta)
+            .coerceIn(55, (sbp - 22).coerceAtMost(105))
+        return sbp to dbp
+    }
+
+    /**
+     * 0x69 START_HEART_RATE request payload (`StartHeartRateReq.getSimpleReq(type)` in smali).
+     * [type] is [MEASURE_TYPE_HEART_RATE] (`0x01`) or [MEASURE_TYPE_BLOOD_PRESSURE] (`0x02`).
+     */
+    fun buildStartMeasurementPayload(type: Int): ByteArray =
+        byteArrayOf(type.toByte(), 0x00)
+
+    /**
+     * 0x6A STOP_HEART_RATE request payload (`StopHeartRateReq` in smali).
+     * For blood pressure ([MEASURE_TYPE_BLOOD_PRESSURE]), passes `[0x02, sbp, dbp]`.
+     * For heart rate ([MEASURE_TYPE_HEART_RATE]), passes `[0x01, bpm, 0x00]`.
+     */
+    fun buildStopMeasurementPayload(
+        type: Int,
+        primaryValue: Int = 0,
+        secondaryValue: Int = 0,
+    ): ByteArray = byteArrayOf(
+        type.toByte(),
+        primaryValue.coerceIn(0, 255).toByte(),
+        secondaryValue.coerceIn(0, 255).toByte(),
+    )
+
+    /**
+     * 0x69 START_HEART_RATE notification packet (`StartHeartRateRsp.acceptData` in smali):
+     *   [0] type (0x01 = HR, 0x02 = BP)
+     *   [1] errCode (0x00 = ok, 0x01 = ring not worn properly / poor contact)
+     *   [2] value (live pulse / BPM)
+     *   [3] sbp (optional, present when payload.size >= 5)
+     *   [4] dbp (optional, present when payload.size >= 5)
+     */
+    fun parseLiveMeasurementPacket(payload: ByteArray): LiveMeasurementPacket? {
+        if (payload.size < 3) return null
+        val type = payload[0].toInt() and 0xFF
+        val errCode = payload[1].toInt() and 0xFF
+        val value = payload[2].toInt() and 0xFF
+        var sbp = 0
+        var dbp = 0
+        if (payload.size >= 5) {
+            val b3 = payload[3].toInt() and 0xFF
+            val b4 = payload[4].toInt() and 0xFF
+            if (b3 > 0 && b4 > 0) {
+                sbp = maxOf(b3, b4)
+                dbp = minOf(b3, b4)
+            }
+        }
+        return LiveMeasurementPacket(
+            type = type,
+            errCode = errCode,
+            value = value,
+            sbp = sbp,
+            dbp = dbp,
         )
     }
 
