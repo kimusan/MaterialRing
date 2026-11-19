@@ -88,9 +88,10 @@ class SyncEngine @Inject constructor(
             bpReadings += pullManualBp(profileId).size
         }
 
-        // Body battery is derived from what we just stored; recompute for the window.
+        // Body battery is derived from what we just stored; recompute up to the current hour.
         val windowStartHour = time.epochDayForOffset(days.maxOfOrNull { it } ?: 0) * 24
-        val windowEndHour = today * 24 + 23
+        val nowHour = time.nowMillis() / 3_600_000L
+        val windowEndHour = minOf(today * 24 + 23, nowHour)
         runCatching {
             bodyBattery.recompute(profileId, windowStartHour, windowEndHour)
         }

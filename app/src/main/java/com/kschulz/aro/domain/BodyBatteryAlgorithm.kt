@@ -2,44 +2,83 @@ package com.kschulz.aro.domain
 
 import com.kschulz.aro.data.model.BodyBatteryPoint
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
- * Ported body-battery score (re/PROTOCOL.md section 8, weights from BodyBatteryAlgorithm).
- * Blends sleep projection, heart-rate load, and step activity into an hourly 0-100 score.
+ * Hourly body-battery wellness model (5..100).
  *
- * This is a derived wellness metric, not a clinical vital, and it is labeled as such in the
- * UI. It only needs the three series the ring actually reports (sleep, HR, steps), so it is
- * fully computable on-device with no extra capture.
+ * Simulates energy recharge during sleep hours and drain during waking hours based on
+ * heart-rate load above resting baseline (65 bpm) and step activity. This is a derived
+ * wellness metric, not a clinical vital.
  */
 object BodyBatteryAlgorithm {
 
-    // Weights from the original BodyBatteryAlgorithm (re/PROTOCOL.md section 8).
-    private const val W_RESTORE = 1.2
-    private const val W_NIGHT_SLEEP = 0.85
-    private const val W_DEEP_SLEEP = 0.75
-    private const val W_EVE_SLEEP = 0.65
-    private const val W_LOW_HR = 0.4
-    private const val W_HIGH_HR = 0.35
-    private const val W_ACTIVITY = 0.3
-    private const val W_REST = 0.25
-    private const val W_REC_LOW = 0.2
-    private const val W_REC_MID = 0.15
-    private const val W_REC_HIGH = 0.1
-    private const val W_TREND = 0.08
-    private const val W_FINAL = 0.17
-    private const val DIVISOR = 120.0
-
     const val MAX_SCORE = 100
     const val MIN_SCORE = 5
+    const val DEFAULT_INITIAL_SCORE = 60.0
+
+    private const val RESTING_HR_BASELINE = 65.0
+    private const val MAX_SLEEP_RECHARGE_PER_HOUR = 7.5
+    private const val BASE_AWAKE_DRAIN_PER_HOUR = 1.4
+
+    data class HourlyInput(
+        val epochHour: Long,
+        val sleepMinutes: Int = 0,
+        val meanHr: Int? = null,
+        val steps: Int = 0,
+    )
 
     /**
-     * Compute an hourly body-battery score across [fromHour]..[toHour].
-     *
-     * @param restMin total rest (sleep) minutes in the window.
-     * @param restLowMin minutes of rest below the light band.
-     * @param restHighMin minutes of rest above the deep band.
-     * @param meanHr mean heart rate across the window (bpm).
-     * @param meanStepsPerHour mean step activity across the window.
+     * Simulate an hour-by-hour charging/draining body-battery curve from ordered [inputs].
+     */
+    fun computeHourly(
+        inputs: List<HourlyInput>,
+        initialScore: Double = DEFAULT_INITIAL_SCORE,
+    ): List<BodyBatteryPoint> {
+        if (inputs.isEmpty()) return emptyList()
+        val sorted = inputs.sortedBy { it.epochHour }
+        var level = initialScore.coerceIn(MIN_SCORE.toDouble(), MAX_SCORE.toDouble())
+        val out = ArrayList<BodyBatteryPoint>(sorted.size)
+
+        for (h in sorted) {
+            val sleepFrac = (h.sleepMinutes / 60.0).coerceIn(0.0, 1.0)
+            val awakeFrac = 1.0 - sleepFrac
+
+            // Sleep recharges energy; lower HR during sleep improves recovery efficiency.
+            val hrRecoveryBonus = when {
+                h.meanHr == null -> 1.0
+                h.meanHr <= 58 -> 1.15
+                h.meanHr <= 70 -> 1.0
+                else -> (1.0 - ((h.meanHr - 70) / 80.0)).coerceIn(0.55, 1.0)
+            }
+            val recharge = MAX_SLEEP_RECHARGE_PER_HOUR * sleepFrac * hrRecoveryBonus
+
+            // Waking hours drain from baseline metabolism, elevated HR, and step activity.
+            val hrStrain = when {
+                h.meanHr == null -> 0.0
+                h.meanHr > RESTING_HR_BASELINE ->
+                    ((h.meanHr - RESTING_HR_BASELINE) / 14.0).coerceIn(0.0, 5.5)
+                h.meanHr < 58 -> -0.6 // restful sitting/lying down slows drain
+                else -> 0.0
+            }
+            val stepStrain = (h.steps / 550.0).coerceIn(0.0, 4.5)
+            val drain = (BASE_AWAKE_DRAIN_PER_HOUR + hrStrain + stepStrain).coerceAtLeast(0.2) * awakeFrac
+
+            level = (level + recharge - drain).coerceIn(MIN_SCORE.toDouble(), MAX_SCORE.toDouble())
+            out.add(
+                BodyBatteryPoint(
+                    profileId = 0,
+                    epochHour = h.epochHour,
+                    score = level.roundToInt().coerceIn(MIN_SCORE, MAX_SCORE),
+                ),
+            )
+        }
+        return out
+    }
+
+    /**
+     * Aggregate fallback used when only window totals are available.
+     * Produces a bounded 5..100 score (previously clamped to 100 due to an unnormalized 1.2 offset).
      */
     fun compute(
         fromHour: Long,
@@ -52,20 +91,17 @@ object BodyBatteryAlgorithm {
     ): List<BodyBatteryPoint> {
         if (toHour < fromHour) return emptyList()
 
-        val restFactor = W_RESTORE + W_NIGHT_SLEEP * (restMin / 600.0).coerceIn(0.0, 1.0)
-        val quality = W_DEEP_SLEEP * (restLowMin / 300.0).coerceIn(0.0, 1.0) +
-            W_EVE_SLEEP * (restHighMin / 300.0).coerceIn(0.0, 1.0)
-
-        // Activity: a moderate HR is restful; very high or very low drains.
-        val hrLoad = (W_LOW_HR + W_HIGH_HR) * (abs(meanHr - 65.0) / DIVISOR).coerceIn(0.0, 1.0)
-        val activity = (W_ACTIVITY + W_REST) * (meanStepsPerHour / 3000.0).coerceIn(0.0, 1.0)
-
-        // Recovery: how much capacity is left.
-        val recovery = (W_REC_LOW + W_REC_MID + W_REC_HIGH - hrLoad - activity).coerceIn(0.0, 1.0)
-        val trend = W_TREND * (1.0 - (meanStepsPerHour / 5000.0).coerceIn(0.0, 1.0))
-
-        val raw = restFactor + quality + W_FINAL * recovery + trend
-        val score = (raw * MAX_SCORE).toInt().coerceIn(MIN_SCORE, MAX_SCORE)
+        val sleepScore = (restMin / 480.0).coerceIn(0.0, 1.0) * 55.0 +
+            ((restLowMin + restHighMin) / 480.0).coerceIn(0.0, 1.0) * 20.0
+        val hrPenalty = if (meanHr > 0) {
+            (abs(meanHr - RESTING_HR_BASELINE) / 60.0).coerceIn(0.0, 1.0) * 25.0
+        } else {
+            0.0
+        }
+        val activityPenalty = (meanStepsPerHour / 2000.0).coerceIn(0.0, 1.0) * 20.0
+        val score = (35.0 + sleepScore - hrPenalty - activityPenalty)
+            .roundToInt()
+            .coerceIn(MIN_SCORE, MAX_SCORE)
 
         val points = ArrayList<BodyBatteryPoint>()
         var hour = fromHour

@@ -97,7 +97,7 @@ class HomeViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val bodyBattery: StateFlow<List<BodyBatteryPoint>> =
-        health.observeBodyBatteryBetween(todayEpochDay * 24 - 23, todayEpochDay * 24)
+        health.observeBodyBatteryBetween(todayEpochDay * 24, todayEpochDay * 24 + 23)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val activeProfile: StateFlow<Profile?> =

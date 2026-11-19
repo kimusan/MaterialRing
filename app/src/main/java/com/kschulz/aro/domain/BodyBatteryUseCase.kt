@@ -4,10 +4,12 @@ import com.kschulz.aro.data.model.BodyBatteryPoint
 import com.kschulz.aro.data.repository.HealthRepository
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.max
+import kotlin.math.min
 
 /**
- * Computes the body-battery score for a profile over a window from its stored sleep,
- * heart-rate, and step series, then persists the hourly points.
+ * Computes the hourly body-battery curve for a profile over a window from its stored
+ * sleep sessions, heart-rate samples, and daily steps, then persists the hourly points.
  */
 @Singleton
 class BodyBatteryUseCase @Inject constructor(
@@ -18,34 +20,70 @@ class BodyBatteryUseCase @Inject constructor(
     }
 
     suspend fun computeFor(profileId: Long, fromHour: Long, toHour: Long): List<BodyBatteryPoint> {
-        val fromMs = fromHour * 3_600_000L
-        val toMs = toHour * 3_600_000L + 3_599_000L
+        if (toHour < fromHour) return emptyList()
+        val fromMs = fromHour * HOUR_MS
+        val toMs = toHour * HOUR_MS + HOUR_MS - 1L
 
         val sessions = health.sleepSessionsFor(profileId, fromMs, toMs)
-        val restMin = sessions.sumOf { ((it.endEpoch - it.startEpoch) / 60_000L).toInt() }
-        // The ring reports coarse stage info; treat a third of rest as the low band and a
-        // third as the high band for the quality term (best-effort, see PROTOCOL.md 7.4).
-        val restLowMin = restMin / 3
-        val restHighMin = restMin / 3
+        val hrSamples = health.heartRateFor(profileId, fromMs, toMs)
+        val stepDays = health.stepsFor(profileId, fromHour / 24L, toHour / 24L)
 
-        val hr = health.heartRateFor(profileId, fromMs, toMs)
-        val meanHr = if (hr.isEmpty()) 0 else hr.map { it.bpm }.average().toInt()
+        val hasAnySignal = sessions.isNotEmpty() ||
+            hrSamples.isNotEmpty() ||
+            stepDays.any { it.steps > 0 }
+        if (!hasAnySignal) return emptyList()
 
-        val steps = health.stepsFor(profileId, fromHour / 24, toHour / 24)
-        val spanHours = (toHour - fromHour + 1).coerceAtLeast(1)
-        val meanStepsPerHour = (steps.sumOf { it.steps } / spanHours).toInt()
+        val hrByHour: Map<Long, Int> = hrSamples
+            .filter { it.bpm > 0 }
+            .groupBy { it.epochMs / HOUR_MS }
+            .mapValues { (_, list) -> list.map { it.bpm }.average().toInt() }
 
-        val points = BodyBatteryAlgorithm.compute(
-            fromHour = fromHour,
-            toHour = toHour,
-            restMin = restMin,
-            restLowMin = restLowMin,
-            restHighMin = restHighMin,
-            meanHr = meanHr,
-            meanStepsPerHour = meanStepsPerHour,
-        ).map { it.copy(profileId = profileId) }
+        val stepsByDay: Map<Long, Int> = stepDays.associate { it.date to it.steps }
+
+        val inputs = ArrayList<BodyBatteryAlgorithm.HourlyInput>((toHour - fromHour + 1).toInt())
+        var hour = fromHour
+        while (hour <= toHour) {
+            val hourStartMs = hour * HOUR_MS
+            val hourEndMs = hourStartMs + HOUR_MS
+
+            var sleepMin = 0
+            for (s in sessions) {
+                val overlapStart = max(hourStartMs, s.startEpoch)
+                val overlapEnd = min(hourEndMs, s.endEpoch)
+                if (overlapEnd > overlapStart) {
+                    sleepMin += ((overlapEnd - overlapStart) / 60_000L).toInt()
+                }
+            }
+            sleepMin = sleepMin.coerceIn(0, 60)
+
+            val daySteps = stepsByDay[hour / 24L] ?: 0
+            val hourOfDay = ((hour % 24L) + 24L) % 24L
+            // Distribute daily steps across daytime waking hours (07:00..22:00) when not asleep.
+            val hourlySteps = if (daySteps > 0 && sleepMin < 30 && hourOfDay in 7..22) {
+                daySteps / 16
+            } else {
+                0
+            }
+
+            inputs.add(
+                BodyBatteryAlgorithm.HourlyInput(
+                    epochHour = hour,
+                    sleepMinutes = sleepMin,
+                    meanHr = hrByHour[hour],
+                    steps = hourlySteps,
+                ),
+            )
+            hour += 1
+        }
+
+        val points = BodyBatteryAlgorithm.computeHourly(inputs)
+            .map { it.copy(profileId = profileId) }
 
         if (points.isNotEmpty()) health.upsertBodyBattery(profileId, points)
         return points
+    }
+
+    companion object {
+        private const val HOUR_MS = 3_600_000L
     }
 }
