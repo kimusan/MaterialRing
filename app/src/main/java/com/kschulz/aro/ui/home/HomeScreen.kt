@@ -311,6 +311,52 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
                 )
             }
 
+            // Hero Activity Ring Card
+            val stepGoal = activeProfile?.goalSteps ?: Profile.DEFAULT_GOAL_STEPS
+            val calGoal = activeProfile?.goalCalories ?: Profile.DEFAULT_GOAL_CALORIES
+            val distGoal = activeProfile?.goalDistanceMeters ?: Profile.DEFAULT_GOAL_DISTANCE_METERS
+            val stepsToday = today?.steps ?: 0
+            val calToday = today?.calories ?: 0
+            val distToday = today?.distanceMeters ?: 0
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    com.kschulz.aro.ui.history.ConcentricActivityRings(
+                        stepsProgress = (stepsToday.toFloat() / stepGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
+                        caloriesProgress = (calToday.toFloat() / calGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
+                        distanceProgress = (distToday.toFloat() / distGoal.coerceAtLeast(1)).coerceIn(0f, 1f),
+                        modifier = Modifier.size(96.dp),
+                    )
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Today's activity", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "$stepsToday / $stepGoal steps",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = com.kschulz.aro.ui.history.StepCyan,
+                        )
+                        Text(
+                            text = "$calToday / $calGoal kcal",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = com.kschulz.aro.ui.history.CalorieCrimson,
+                        )
+                        Text(
+                            text = "$distToday / $distGoal m",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = com.kschulz.aro.ui.history.DistanceGreen,
+                        )
+                    }
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 val hrDisplay = when {
                     liveHr > 0 -> "$liveHr bpm"
@@ -342,7 +388,6 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                val stepGoal = activeProfile?.goalSteps ?: Profile.DEFAULT_GOAL_STEPS
                 MetricTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.FitnessCenter,
@@ -364,26 +409,42 @@ fun HomeScreen(viewModel: HomeViewModel = hiltViewModel(), modifier: Modifier = 
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Body battery", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Derived wellness score, not a vital.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column {
+                            Text("Body battery", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Derived wellness score, not a vital.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (batteryPoints.isNotEmpty()) {
+                            val latest = batteryPoints.last()
+                            Text(
+                                "${latest.score}/100",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = com.kschulz.aro.ui.history.BodyBatteryBlue,
+                            )
+                        }
+                    }
                     if (batteryPoints.isEmpty()) {
-                        Text("No data yet.", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "No data yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
                     } else {
                         val latest = batteryPoints.last()
-                        Text(
-                            "${latest.score}/100",
-                            style = MaterialTheme.typography.displaySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
                         LinearProgressIndicator(
                             progress = { latest.score / 100f },
+                            color = com.kschulz.aro.ui.history.BodyBatteryBlue,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 8.dp),
+                                .padding(top = 10.dp),
                         )
                     }
                 }

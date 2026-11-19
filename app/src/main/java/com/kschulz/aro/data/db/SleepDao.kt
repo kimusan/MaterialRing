@@ -28,6 +28,14 @@ interface SleepDao {
     @Query("SELECT * FROM sleep_segments WHERE sessionId = :sessionId ORDER BY id ASC")
     fun segments(sessionId: Long): Flow<List<SleepSegment>>
 
+    @Query(
+        "SELECT seg.* FROM sleep_segments seg " +
+            "INNER JOIN sleep_sessions sess ON seg.sessionId = sess.id " +
+            "WHERE sess.profileId = :profileId AND sess.startEpoch BETWEEN :from AND :to " +
+            "ORDER BY seg.id ASC",
+    )
+    fun observeSegmentsForWindow(profileId: Long, from: Long, to: Long): Flow<List<SleepSegment>>
+
     @Query("SELECT * FROM sleep_sessions WHERE profileId = :profileId AND isNap = 0 ORDER BY startEpoch DESC LIMIT 1")
     fun observeLatestMain(profileId: Long): Flow<SleepSession?>
 

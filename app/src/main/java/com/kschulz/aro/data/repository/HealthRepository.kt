@@ -49,6 +49,9 @@ class HealthRepository @Inject constructor(
     fun observeSleepSessions(from: Long, to: Long): Flow<List<SleepSession>> =
         scoped(emptyList()) { pid -> sleep.observeSessions(pid, from, to) }
 
+    fun observeSleepSegmentsBetween(from: Long, to: Long): Flow<List<SleepSegment>> =
+        scoped(emptyList()) { pid -> sleep.observeSegmentsForWindow(pid, from, to) }
+
     fun observeLatestMainSleep(): Flow<SleepSession?> =
         scoped(null) { pid -> sleep.observeLatestMain(pid) }
 
