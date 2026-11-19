@@ -38,6 +38,16 @@ class SettingsRepository @Inject constructor(
         dao.upsert(AppSetting(SettingsKeys.HEALTH_CONNECT_ENABLED, if (enabled) 1L else 0L))
     }
 
+    fun observeUseMetric(): Flow<Boolean> =
+        dao.observe(SettingsKeys.USE_METRIC_UNITS)
+            .map { (it?.value ?: 1L) == 1L }
+            .distinctUntilChanged()
+            .catch { emitAll(flowOf(true)) }
+
+    suspend fun setUseMetric(metric: Boolean) {
+        dao.upsert(AppSetting(SettingsKeys.USE_METRIC_UNITS, if (metric) 1L else 0L))
+    }
+
     companion object {
         const val NO_PROFILE = -1L
     }

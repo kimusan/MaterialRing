@@ -44,4 +44,60 @@ class RingPayloadsSetTimeTest {
     fun `payload is always seven bytes`() {
         assertEquals(7, RingPayloads.buildSetTimePayload(2026, 10, 30, 14, 5, 9).size)
     }
+
+    @Test
+    fun `0x0A time setting payload encodes profile attributes and BP calibration baseline`() {
+        val p = RingPayloads.buildTimeSettingPayload(
+            gender = 1,
+            age = 34,
+            heightCm = 168,
+            weightKg = 62,
+            sbpBaseline = 118,
+            dbpBaseline = 76,
+            useMetric = true,
+            use24Hour = true,
+            hrWarnBpm = 165,
+            hrWarnEnabled = true,
+        )
+        assertEquals(11, p.size)
+        assertArrayEquals(
+            byteArrayOf(
+                0x02,
+                0x00,
+                0x00,
+                0x01,
+                34.toByte(),
+                168.toByte(),
+                62.toByte(),
+                118.toByte(),
+                76.toByte(),
+                165.toByte(),
+                0x01,
+            ),
+            p,
+        )
+    }
+
+    @Test
+    fun `0x21 target setting payload encodes little-endian daily step, calorie, distance, and sleep goals`() {
+        val p = RingPayloads.buildTargetSettingPayload(
+            goalSteps = 10_000, // 0x002710 -> LE 10 27 00
+            goalCalories = 300, // 300_000 = 0x0493E0 -> LE E0 93 04
+            goalDistanceMeters = 5_000, // 0x001388 -> LE 88 13 00
+            goalSportMinutes = 45, // 0x002D -> LE 2D 00
+            goalSleepMinutes = 480, // 0x01E0 -> LE E0 01
+        )
+        assertEquals(14, p.size)
+        assertArrayEquals(
+            byteArrayOf(
+                0x02,
+                0x10, 0x27, 0x00,
+                0xE0.toByte(), 0x93.toByte(), 0x04,
+                0x88.toByte(), 0x13, 0x00,
+                0x2D, 0x00,
+                0xE0.toByte(), 0x01,
+            ),
+            p,
+        )
+    }
 }

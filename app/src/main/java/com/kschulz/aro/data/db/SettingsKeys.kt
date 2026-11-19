@@ -4,4 +4,5 @@ package com.kschulz.aro.data.db
 object SettingsKeys {
     const val ACTIVE_PROFILE_ID = "active_profile_id"
     const val HEALTH_CONNECT_ENABLED = "health_connect_enabled"
+    const val USE_METRIC_UNITS = "use_metric_units"
 }

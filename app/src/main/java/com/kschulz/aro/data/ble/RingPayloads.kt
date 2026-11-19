@@ -1,5 +1,6 @@
 package com.kschulz.aro.data.ble
 
+import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.StepDay
 
 /**
@@ -52,6 +53,74 @@ object RingPayloads {
         bcd(second),
         language.toByte(),
     )
+
+    /**
+     * 0x0A GET_TIME_SETTING write payload (traced to `TimeFormatReq.getWriteInstance` in smali).
+     * 11 bytes carrying unit/clock preferences, anthropometric attributes (used by the ring to
+     * compute calories and walking distance), and systolic/diastolic BP calibration baseline:
+     *   [0] 0x02 (write sub-command; 0x01 is read)
+     *   [1] timeFormat (0 = 24-hour, 1 = 12-hour)
+     *   [2] unitFormat (0 = Metric, 1 = Imperial)
+     *   [3] sex (0 = Male, 1 = Female)
+     *   [4] age (years)
+     *   [5] heightCm (unsigned byte)
+     *   [6] weightKg (unsigned byte)
+     *   [7] sbpBaseline (systolic calibration baseline, default 120)
+     *   [8] dbpBaseline (diastolic calibration baseline, default 80)
+     *   [9] hrWarnBpm (heart rate warning threshold, default 160)
+     *  [10] hrWarnOpen (0 = off, 1 = on)
+     */
+    fun buildTimeSettingPayload(
+        gender: Int = Profile.GENDER_MALE,
+        age: Int = 30,
+        heightCm: Int = Profile.DEFAULT_HEIGHT_CM,
+        weightKg: Int = Profile.DEFAULT_WEIGHT_KG,
+        sbpBaseline: Int = Profile.DEFAULT_SBP_BASELINE,
+        dbpBaseline: Int = Profile.DEFAULT_DBP_BASELINE,
+        useMetric: Boolean = true,
+        use24Hour: Boolean = true,
+        hrWarnBpm: Int = 160,
+        hrWarnEnabled: Boolean = false,
+    ): ByteArray = byteArrayOf(
+        0x02,
+        if (use24Hour) 0x00 else 0x01,
+        if (useMetric) 0x00 else 0x01,
+        gender.coerceIn(0, 1).toByte(),
+        age.coerceIn(10, 110).toByte(),
+        heightCm.coerceIn(50, 250).toByte(),
+        weightKg.coerceIn(20, 250).toByte(),
+        sbpBaseline.coerceIn(80, 200).toByte(),
+        dbpBaseline.coerceIn(40, 140).toByte(),
+        hrWarnBpm.coerceIn(100, 220).toByte(),
+        if (hrWarnEnabled) 0x01 else 0x00,
+    )
+
+    /**
+     * 0x21 TARGET_SETTING write payload (traced to `TargetSettingReq$3.smali`).
+     * 14 bytes:
+     *   [0]      0x02 (write sub-command)
+     *   [1..3]   goalSteps (3-byte little-endian)
+     *   [4..6]   goalCalories * 1000 (3-byte little-endian)
+     *   [7..9]   goalDistanceMeters (3-byte little-endian)
+     *   [10..11] goalSportMinutes (2-byte little-endian)
+     *   [12..13] goalSleepMinutes (2-byte little-endian)
+     */
+    fun buildTargetSettingPayload(
+        goalSteps: Int = Profile.DEFAULT_GOAL_STEPS,
+        goalCalories: Int = Profile.DEFAULT_GOAL_CALORIES,
+        goalDistanceMeters: Int = Profile.DEFAULT_GOAL_DISTANCE_METERS,
+        goalSportMinutes: Int = 30,
+        goalSleepMinutes: Int = Profile.DEFAULT_GOAL_SLEEP_MINUTES,
+    ): ByteArray {
+        val out = ByteArray(14)
+        out[0] = 0x02
+        ByteOrder.toLeBytes(goalSteps.coerceAtLeast(0), 3).copyInto(out, 1)
+        ByteOrder.toLeBytes(goalCalories.coerceAtLeast(0) * 1000, 3).copyInto(out, 4)
+        ByteOrder.toLeBytes(goalDistanceMeters.coerceAtLeast(0), 3).copyInto(out, 7)
+        ByteOrder.toLeBytes(goalSportMinutes.coerceAtLeast(0), 2).copyInto(out, 10)
+        ByteOrder.toLeBytes(goalSleepMinutes.coerceAtLeast(0), 2).copyInto(out, 12)
+        return out
+    }
 
     /**
      * Packed BCD, byte-identical to the vendor `decimalToBCD` (`(n/10)<<4 | n%10` then

@@ -80,6 +80,18 @@ class HomeViewModel @Inject constructor(
         health.observeBodyBatteryBetween(todayEpochDay * 24 - 23, todayEpochDay * 24)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val activeProfile: StateFlow<com.kschulz.aro.data.model.Profile?> =
+        profiles.observeActive()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val allProfiles: StateFlow<List<com.kschulz.aro.data.model.Profile>> =
+        profiles.observeAll()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val useMetric: StateFlow<Boolean> =
+        settings.observeUseMetric()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
     val profileName: StateFlow<String?> =
         profiles.observeActive()
             .map { it?.name }
@@ -127,6 +139,32 @@ class HomeViewModel @Inject constructor(
                 val id = profiles.add(DEFAULT_PROFILE_NAME, time.nowMillis())
                 profiles.switchTo(id)
             }
+        }
+    }
+
+    fun switchProfile(id: Long) {
+        viewModelScope.launch {
+            profiles.switchTo(id)
+            profiles.getById(id)?.let {
+                engine.syncProfileSettings(it, time, useMetric.value)
+            }
+        }
+    }
+
+    fun saveProfile(profile: com.kschulz.aro.data.model.Profile) {
+        if (profile.name.isBlank()) return
+        viewModelScope.launch {
+            val isNew = profile.id == 0L
+            val savedId = profiles.save(
+                if (isNew) profile.copy(createdAtEpochMs = time.nowMillis()) else profile,
+            )
+            if (isNew || activeProfile.value == null) {
+                profiles.switchTo(savedId)
+            }
+            profiles.getById(savedId)?.let {
+                engine.syncProfileSettings(it, time, useMetric.value)
+            }
+            _lastSync.value = "Profile \"${profile.name}\" saved"
         }
     }
 
@@ -192,7 +230,9 @@ class HomeViewModel @Inject constructor(
                     }
                 }
                 command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
-                val result = engine.sync(profileId, time)
+                val currentProfile = profiles.getById(profileId)
+                val metric = settings.observeUseMetric().first()
+                val result = engine.sync(profileId, time, currentProfile, metric)
                 _lastSync.value = if (result.connected) {
                     "Synced ${result.daysSynced} day(s): ${result.steps} steps, " +
                         "${result.bpReadings} BP, ${result.hrSamples} HR, ${result.sleepSessions} sleep"

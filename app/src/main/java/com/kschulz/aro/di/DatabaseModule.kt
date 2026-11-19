@@ -17,6 +17,8 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AroDatabase =
         Room.databaseBuilder(context, AroDatabase::class.java, AroDatabase.NAME)
+            .addMigrations(AroDatabase.MIGRATION_1_2)
+            .fallbackToDestructiveMigration()
             .build()
 
     @Provides

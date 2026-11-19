@@ -8,10 +8,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,6 +32,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.kschulz.aro.data.ble.ConnectionState
+import com.kschulz.aro.data.model.Profile
+import com.kschulz.aro.ui.profile.ProfileEditorDialog
+import com.kschulz.aro.ui.profile.profileSummaryLine
 
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Modifier = Modifier) {
@@ -33,9 +44,26 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Mod
     val devices by viewModel.boundDevices.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val hcEnabled by viewModel.healthConnectEnabled.collectAsStateWithLifecycle()
+    val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
 
-    var newProfile by remember { mutableStateOf("") }
+    var editingProfile by remember { mutableStateOf<Profile?>(null) }
+    var showProfileDialog by remember { mutableStateOf(false) }
+
+    if (showProfileDialog) {
+        ProfileEditorDialog(
+            initial = editingProfile,
+            onDismiss = {
+                showProfileDialog = false
+                editingProfile = null
+            },
+            onSave = { updated ->
+                viewModel.saveProfile(updated)
+                showProfileDialog = false
+                editingProfile = null
+            },
+        )
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -43,52 +71,112 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Mod
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Profiles", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "Local only. Switching is instant; there is no account or logout.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("User profiles", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "Local only. Switching is instant; physical stats and goals sync to your ring.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Button(
+                    onClick = {
+                        editingProfile = Profile(
+                            id = 0,
+                            name = "",
+                            createdAtEpochMs = System.currentTimeMillis(),
+                        )
+                        showProfileDialog = true
+                    },
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.padding(end = 4.dp))
+                    Text("New")
+                }
+            }
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = newProfile,
-                        onValueChange = { newProfile = it },
-                        label = { Text("Profile name") },
-                        singleLine = true,
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                profiles.forEach { p ->
+                    val active = p.id == activeId
+                    Card(
                         modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedButton(onClick = {
-                        viewModel.addProfile(newProfile)
-                        newProfile = ""
-                    }) {
-                        Text("Add profile")
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (active) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                        ),
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${p.name}${if (active) "  •  Active" else ""}",
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Text(
+                                        text = profileSummaryLine(p),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(
+                                        text = "Goals: ${p.goalSteps} steps • ${p.goalCalories} kcal • ${p.goalDistanceMeters / 1000f} km • ${p.goalSleepMinutes / 60}h sleep",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                if (!active) {
+                                    FilledTonalButton(onClick = { viewModel.switchProfile(p.id) }) {
+                                        Text("Switch")
+                                    }
+                                }
+                                IconButton(
+                                    onClick = {
+                                        editingProfile = p
+                                        showProfileDialog = true
+                                    },
+                                ) {
+                                    Icon(Icons.Filled.Edit, contentDescription = "Edit ${p.name}")
+                                }
+                                if (profiles.size > 1) {
+                                    IconButton(onClick = { viewModel.deleteProfile(p.id) }) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "Delete ${p.name}")
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
         item {
-            profiles.forEach { p ->
-                val active = p.id == activeId
+            Text("Units & preferences", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
                 ) {
-                    Text(
-                        "${p.name}${if (active) "  (active)" else ""}",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (!active) {
-                        TextButton(onClick = { viewModel.switchProfile(p.id) }) { Text("Switch") }
+                    Column(Modifier.weight(1f)) {
+                        Text("Metric units (cm, kg, km)", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            if (useMetric) "Using metric units on phone and ring" else "Using imperial units (ft/in, lbs, mi)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    TextButton(onClick = { viewModel.deleteProfile(p.id) }) { Text("Delete") }
+                    Switch(checked = useMetric, onCheckedChange = viewModel::setUseMetric)
                 }
             }
         }
@@ -136,19 +224,19 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel(), modifier: Mod
                             )
                             Text(
                                 when (connectionState) {
-                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTED -> "Connected"
-                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTING -> "Connecting..."
-                                    com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED -> "Disconnected"
+                                    ConnectionState.CONNECTED -> "Connected"
+                                    ConnectionState.CONNECTING -> "Connecting..."
+                                    ConnectionState.DISCONNECTED -> "Disconnected"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = when (connectionState) {
-                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primary
-                                    com.kschulz.aro.data.ble.ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
-                                    com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.error
+                                    ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primary
+                                    ConnectionState.CONNECTING -> MaterialTheme.colorScheme.tertiary
+                                    ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.error
                                 },
                             )
                         }
-                        if (connectionState == com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED) {
+                        if (connectionState == ConnectionState.DISCONNECTED) {
                             TextButton(onClick = { viewModel.reconnect(d.macAddress) }) {
                                 Text("Reconnect")
                             }

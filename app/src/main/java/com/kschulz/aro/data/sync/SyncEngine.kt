@@ -8,6 +8,7 @@ import com.kschulz.aro.data.ble.RingPayloads
 import com.kschulz.aro.data.model.BloodPressure
 import com.kschulz.aro.data.model.BpSource
 import com.kschulz.aro.data.model.HeartRateSample
+import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.SleepSegment
 import com.kschulz.aro.data.model.SleepSession
 import com.kschulz.aro.data.model.StepDay
@@ -34,14 +35,24 @@ class SyncEngine @Inject constructor(
     /**
      * @param profileId the profile to write into (resolved by the caller from the active
      * profile, so a sync always lands in the profile the user is on).
+     * @param profile optional active [Profile]; when present, its anthropometric attributes
+     * and activity/sleep goals are pushed to the ring via opcodes 0x0A and 0x21.
      */
-    suspend fun sync(profileId: Long, time: TimeSource): SyncResult {
+    suspend fun sync(
+        profileId: Long,
+        time: TimeSource,
+        profile: Profile? = null,
+        useMetric: Boolean = true,
+    ): SyncResult {
         if (!command.isConnected) return SyncResult(connected = false)
 
         // The vendor's post-bind init chain sends SET_DEVICE_TIME (0x01) first, before any
         // data query; the ring answers history pulls only once it has a clock. Do the same
         // here so the 0x46 distribution query below is not answered with nothing.
         sendTimeBaseline(time)
+        if (profile != null) {
+            syncProfileSettings(profile, time, useMetric)
+        }
 
         val distribution = queryDistribution()
         val days = if (distribution != null) DistributionBitmap.daysToPull(distribution)
@@ -86,6 +97,36 @@ class SyncEngine @Inject constructor(
             sleepSessions = sleepSessions,
             distributionCleared = confirmed,
         )
+    }
+
+    /**
+     * Push user profile personalization (0x0A) and target goals (0x21) to the connected ring.
+     */
+    suspend fun syncProfileSettings(
+        profile: Profile,
+        time: TimeSource,
+        useMetric: Boolean = true,
+    ) {
+        if (!command.isConnected) return
+        val currentYear = time.localClock().year
+        val timeSettingPayload = RingPayloads.buildTimeSettingPayload(
+            gender = profile.gender,
+            age = profile.age(currentYear),
+            heightCm = profile.heightCm,
+            weightKg = profile.weightKg,
+            sbpBaseline = profile.sbpBaseline,
+            dbpBaseline = profile.dbpBaseline,
+            useMetric = useMetric,
+        )
+        command.request(Opcodes.GET_TIME_SETTING, timeSettingPayload)
+
+        val targetPayload = RingPayloads.buildTargetSettingPayload(
+            goalSteps = profile.goalSteps,
+            goalCalories = profile.goalCalories,
+            goalDistanceMeters = profile.goalDistanceMeters,
+            goalSleepMinutes = profile.goalSleepMinutes,
+        )
+        command.request(Opcodes.TARGET_SETTING, targetPayload)
     }
 
     private suspend fun queryDistribution(): Int? {

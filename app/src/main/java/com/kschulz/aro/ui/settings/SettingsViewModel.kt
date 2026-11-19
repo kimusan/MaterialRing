@@ -9,6 +9,7 @@ import com.kschulz.aro.data.model.Ring
 import com.kschulz.aro.data.repository.DeviceRepository
 import com.kschulz.aro.data.repository.ProfileRepository
 import com.kschulz.aro.data.repository.SettingsRepository
+import com.kschulz.aro.data.sync.SyncEngine
 import com.kschulz.aro.data.sync.TimeSource
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -21,14 +22,15 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** Profiles (add / switch / rename / delete, instant), the opt-in Health Connect toggle,
- *  and bound-device info. No cloud: everything here is local. */
+/** Profiles (add / switch / edit / delete, instant), unit preferences, the opt-in Health
+ *  Connect toggle, and bound-device info. No cloud: everything here is local. */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val profiles: ProfileRepository,
     private val settings: SettingsRepository,
     private val devices: DeviceRepository,
     private val transport: RingBleTransport,
+    private val syncEngine: SyncEngine,
     private val time: TimeSource,
 ) : ViewModel() {
 
@@ -46,6 +48,9 @@ class SettingsViewModel @Inject constructor(
     val healthConnectEnabled: StateFlow<Boolean> =
         settings.observeHealthConnectEnabled().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    val useMetric: StateFlow<Boolean> =
+        settings.observeUseMetric().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
@@ -54,13 +59,42 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             val id = profiles.add(name, time.nowMillis())
             profiles.switchTo(id)
+            profiles.getById(id)?.let {
+                syncEngine.syncProfileSettings(it, time, useMetric.value)
+            }
             _message.value = "Profile \"$name\" created"
+        }
+    }
+
+    fun saveProfile(profile: Profile) {
+        if (profile.name.isBlank()) return
+        viewModelScope.launch {
+            val isNew = profile.id == 0L
+            val savedId = profiles.save(
+                if (isNew) profile.copy(createdAtEpochMs = time.nowMillis()) else profile,
+            )
+            if (isNew || activeProfileId.value == SettingsRepository.NO_PROFILE) {
+                profiles.switchTo(savedId)
+            }
+            if (activeProfileId.value == savedId || isNew) {
+                profiles.getById(savedId)?.let {
+                    syncEngine.syncProfileSettings(it, time, useMetric.value)
+                }
+            }
+            _message.value = if (isNew) {
+                "Profile \"${profile.name}\" created"
+            } else {
+                "Profile \"${profile.name}\" updated"
+            }
         }
     }
 
     fun switchProfile(id: Long) {
         viewModelScope.launch {
             profiles.switchTo(id)
+            profiles.getById(id)?.let {
+                syncEngine.syncProfileSettings(it, time, useMetric.value)
+            }
             _message.value = null
         }
     }
@@ -83,6 +117,15 @@ class SettingsViewModel @Inject constructor(
     fun setHealthConnect(enabled: Boolean) {
         viewModelScope.launch {
             settings.setHealthConnectEnabled(enabled)
+        }
+    }
+
+    fun setUseMetric(metric: Boolean) {
+        viewModelScope.launch {
+            settings.setUseMetric(metric)
+            profiles.getById(activeProfileId.value)?.let {
+                syncEngine.syncProfileSettings(it, time, metric)
+            }
         }
     }
 

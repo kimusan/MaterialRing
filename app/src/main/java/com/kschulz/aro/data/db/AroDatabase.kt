@@ -3,6 +3,8 @@ package com.kschulz.aro.data.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.kschulz.aro.data.model.AppSetting
 import com.kschulz.aro.data.model.BodyBatteryPoint
 import com.kschulz.aro.data.model.BloodPressure
@@ -25,7 +27,7 @@ import com.kschulz.aro.data.model.StepDay
         BloodPressure::class,
         BodyBatteryPoint::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(BpSourceConverter::class)
@@ -41,5 +43,21 @@ abstract class AroDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "aro.db"
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE profiles ADD COLUMN gender INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN birthYear INTEGER NOT NULL DEFAULT 1990")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN heightCm INTEGER NOT NULL DEFAULT 175")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN weightKg INTEGER NOT NULL DEFAULT 70")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN sbpBaseline INTEGER NOT NULL DEFAULT 120")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN dbpBaseline INTEGER NOT NULL DEFAULT 80")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN goalSteps INTEGER NOT NULL DEFAULT 8000")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN goalCalories INTEGER NOT NULL DEFAULT 300")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN goalDistanceMeters INTEGER NOT NULL DEFAULT 5000")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN goalSleepMinutes INTEGER NOT NULL DEFAULT 480")
+                db.execSQL("ALTER TABLE profiles ADD COLUMN isConfigured INTEGER NOT NULL DEFAULT 0")
+            }
+        }
     }
 }
