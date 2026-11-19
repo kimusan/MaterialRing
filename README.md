@@ -1,112 +1,122 @@
 # Aro
 
-A clean-room, local-first Android companion app for a smart ring. It talks to the
-ring directly over
-Bluetooth Low Energy, stores every health reading on the device, and shows a modern
-Material 3 (Material You) UI.
-
-The original app is a QC Wireless white-label built on the Oudmon BLE SDK. This project
-reuses the *wire protocol* (reverse-engineered and verified against the decompiled APK)
-but writes every layer from scratch.
+A clean-room, local-first Android companion app for smart rings. It talks to your
+ring directly over Bluetooth Low Energy, stores every health reading privately on
+the device in Room, and presents a modern Material 3 (Material You) UI with
+interactive charts and home screen widgets.
 
 ## Why this exists
 
-The stock app phones home to a dozen third-party servers (its own cloud, Baidu location
-and AI, Firebase, Microsoft speech, several CDN buckets). This app does not. There is no
-backend, no analytics, no account. All data lives in a local SQLite database via Room.
-The only outward path is Google Health Connect, which is off by default and only writes
-when you explicitly turn it on in Settings.
+Stock smart-ring apps (such as QRing and JRing) phone home to dozens of third-party
+servers (vendor clouds, Baidu location/AI, Firebase, speech SDKs, CDN buckets).
+**Aro does not.** There is no backend, no analytics, no account, and no internet
+permission. All health data stays in a local SQLite database via Room. The only
+outward path is **Google Health Connect**, which is off by default and only writes
+when you explicitly opt in and grant permissions in Settings.
 
-## What it does
+## Supported ring models & protocols
 
-- **Scans and binds** the ring by its fixed advertising-name prefix, using
-  standard Android bonding (there is no custom pairing handshake to port).
-- **Streams live vitals**: real-time heart rate and battery level update on the home
-  screen with no polling.
-- **Syncs history** over BLE: steps, manual blood pressure, and heart-rate samples. Sync
-  is resumable (it re-queries the device's data-distribution bitmap after a dropped link)
-  and idempotent (reads upsert on a composite key, so re-pulling a range never creates
-  duplicates).
-- **Manual blood pressure** in mmHg. **Auto (continuous) blood pressure** is behind a flag
-  until the raw-to-mmHg mapping is captured from the physical ring.
-- **Profiles**: multiple on-device profiles, instant switching (a query filter, not a
-  logout), no cloud account.
-- **Body battery**: a derived wellness score (ported from the original's algorithm),
-  clearly labeled as a metric, not a clinical vital.
+Aro automatically detects the ring's BLE protocol from its GATT services when connecting:
+
+| Protocol family | Supported models / BLE prefixes | GATT command channel | Framing |
+|---|---|---|---|
+| **Oudmon / QRing** | `R01`, `R02`, `R03` (tested on `R03_A807`), `R04`, `R05`, `R06`, `R11`, `VK-5098`, `MERLIN`, `Hello Ring`, `RING1`, `boAtring`, `Y25`, `H59`, `DS1314`, `DS520`, `DS12` | `6e40fff0-...` (`6e400002` TX / `6e400003` RX) + `de5bf728-...` (`de5bf72a` / `de5bf729` big-data) | 16-byte additive-checksum command frames + `0xBC` CRC-16/MODBUS big-data frames |
+| **JRing / Dialog** | `SMART_RING` (tested on Dialog/Renesas DA1458x), `JRing` | `000056ff-...` (`000033f3` TX / `000033f4` RX) + standard Battery `0x180F` (`0x2A19`) | Fixed 20-byte frames (`[cmd, 19 payload bytes]`, no checksum) |
+
+Multiple rings can be bound simultaneously (**Settings → Add ring**), with one
+active ring connected at a time and one-tap switching between rings.
+
+## Features
+
+- **Activity & Steps**: Concentric daily activity rings (steps, calories, distance),
+  step history sync (`0x48` + `0x43` fallback on Oudmon; `0x10`/`0x03` on JRing),
+  and live `0x73` push updates while connected.
+- **Heart Rate (bpm)**: Live sensor readout, on-demand measurement (`0x69`/`0x6A`
+  or JRing `0x23`/`0x24`), and periodic history sync (`0x15` / `0x16`).
+- **Blood Pressure (mmHg)**: On-demand live BP measurement (`0x69`/`0x6A` with
+  profile baseline calibration), auto-BP (`0x0D`) & manual-BP (`0x14`) sync, and
+  AHA/ESC category badges.
+- **Blood Oxygen (SpO2 %)**: On-demand live measurement (`0x69` type `0x03` / JRing
+  `0x23 0x02`) and automatic background SpO2 sync (`0x2C` + `0xBC 0x2A`).
+- **Sleep & Stages**: Full overnight hypnogram and stage breakdown (**Deep**,
+  **Light**, **REM**, **Awake**) via Oudmon's `0xBC 0x27` new sleep protocol and
+  `0x44` fallback.
+- **Skin & Body Temperature (°C)**: Live dual-channel thermistor measurement
+  (`0x37`/`0x38`) on `SMART_RING` (JRing) devices.
+- **Stress (1–100) & Body Battery (5–100)**: On-device derived wellness metrics
+  for both ring families — hourly charging during sleep and draining with waking
+  HR/activity load (clearly labeled as derived wellness metrics, not clinical vitals).
+- **Interactive History Charts**: Daily, Weekly, and Monthly plots for every metric
+  with touch scrubbing, date navigation, and tap-to-jump from any Home card.
+- **Card Info Popups (`i`)**: Concise explanations on every Home card covering what
+  each metric means, how it is calculated, and reference ranges by age group.
+- **Configurable Continuous Monitoring**: Choose automatic background measurement
+  intervals in **Settings** for Heart Rate (`Off`, `10m`, `15m`, `30m`, `1h`),
+  SpO2 (`Off`, `30m`, `1h`), and Blood Pressure (`Off`, `30m`, `1h`, `2h`).
+- **4 System-Themed Android Home Screen Widgets**:
+  - *Aro • Today (Numbers)* (`2×2`)
+  - *Aro • Weekly Steps (Graph)* (`4×2`)
+  - *Aro • Sleep & Vitals* (`4×2`)
+  - *Aro • Monthly Activity (Graph)* (`4×2`)
+  All adapt automatically to Light/Dark mode and Android 12+ Material You dynamic colors.
+- **On-Device Profiles & Goals**: Multiple local profiles with instant switching,
+  physical stats (height, weight, birth year, gender, BP baseline), and custom goals
+  synced to the ring.
+- **Google Health Connect (Opt-In)**: Write-only export with runtime permission
+  prompts and idempotent `clientRecordId` deduplication for Steps, Distance,
+  Calories, Heart Rate, Sleep (with stages), Blood Pressure, and SpO2.
+- **Pull-to-Sync & Top-Bar Controls**: Pull down on Home or History to sync, or use
+  the Sync / Reconnect actions in the top app bar.
 
 ## What it deliberately does not do
 
-- No network at all. No cloud, no websocket, no analytics, no location, no speech.
-- No firmware update in v1.
-- No media/file transfer (the original's photo/album/ebook handlers are not ring health).
+- No network at all — no cloud backend, no telemetry, no analytics, no account, no location tracking.
+- No firmware flashing (DFU/SUOTA) to avoid bricking user hardware.
+- No unrelated media/photo/ebook transfer handlers.
 
 ## Architecture
 
-A single Gradle module with package-enforced boundaries:
+Single Gradle module with package-enforced boundaries:
 
 ```
 com.kschulz.aro/
-  data/ble/            RingBleTransport (GATT), RingCommandClient, RingProtocolCodec,
-                       Opcodes, Crc16, SumCheck, ByteOrder, RingPayloads, RingScanner
-  data/model/          Room entities: Profile, Ring, StepDay, SleepSession, SleepSegment,
-                       HeartRateSample, BloodPressure, BodyBatteryPoint, AppSetting
-  data/db/             AroDatabase, DAOs, type converters
+  data/ble/            RingBleTransport (GATT), RingCommandClient, RingProtocol,
+                       RingProtocolCodec (Oudmon 16B + 0xBC), JRingProtocol (20B),
+                       GattUuids, Opcodes, Crc16, SumCheck, ByteOrder, RingPayloads,
+                       RingScanner
+  data/model/          Room v5 entities: Profile, Ring, StepDay, SleepSession,
+                       SleepSegment, HeartRateSample, BloodPressure, Spo2Sample,
+                       TemperatureSample, StressSample, BodyBatteryPoint, AppSetting
+  data/db/             AroDatabase (with MIGRATION_1_2 .. MIGRATION_4_5), DAOs
   data/repository/     ProfileRepository, DeviceRepository, HealthRepository,
                        SettingsRepository (all profile-scoped)
-  data/sync/           SyncEngine, SyncJob (WorkManager), DistributionBitmap, TimeSource
+  data/sync/           SyncEngine (Oudmon + JRing paths), SyncJob (WorkManager),
+                       DistributionBitmap, TimeSource
+  data/healthconnect/  HealthConnectExporter (androidx.health.connect:connect-client)
   domain/              BodyBatteryAlgorithm, BodyBatteryUseCase
-  ui/                  Compose screens + Material 3 theme (dynamic color)
+  ui/                  Compose screens (Home, History + Charts, Scan, Settings,
+                       ProfileEditorDialog, MetricInfoDialog) + Material 3 theme
+  widget/              4 AppWidgetProviders + WidgetChartRenderer + WidgetDataLoader
   di/                  Hilt modules
 ```
 
-### The BLE layer is the swappable part
+## Building & Testing
 
-The transport (`RingBleTransport`) owns the Android GATT connection and knows nothing
-about opcodes or payloads: it writes an already-framed `Frame` and emits raw notify
-bytes. The codec (`RingProtocolCodec`) is specific to this ring: it adds the transmit header and
-CRC, and strips the receive frame. A different ring brand is a new codec plus transport
-binding; nothing above `data/ble` changes.
-
-### Protocol (summary)
-
-The data channel is a serial-port (NUS-style) service. Framing is asymmetric:
-
-- **Phone → device**: `[0xC4 | cmd | len_lo | len_hi | crc16_lo | crc_hi | payload]`
-  (CRC-16/MODBUS over the payload; empty payload → `[0xC4|cmd|00|00|FF|FF]`).
-- **Device → phone**: `[cmd | payload | sum_checksum]` (additive byte-sum, no 0xC4, no
-  length field; bit 0x80 of the cmd byte is the error flag).
-- **Byte order is directional**: little-endian on the way out, big-endian on the way in.
-
-The protocol core is pinned by unit tests (`RingProtocolCodecTest`, `SyncEngineTest`):
-CRC-16/MODBUS check value, both frame layouts, the sum checksum, the directional byte
-order, the payload parsers, and the resumable/idempotent sync loop. The authoritative,
-smali-traced write-up of every opcode and byte layout lives in `re/PROTOCOL.md` (a
-local-only working document, not committed).
-
-## Building
-
-Requires JDK 17 and the Android SDK (platform 34). Point the SDK at a local install via
-`local.properties` (`sdk.dir=...`), which is gitignored.
+Requires JDK 17 and the Android SDK (platform 34). Point the SDK at a local install
+via `local.properties` (`sdk.dir=...`), which is gitignored.
 
 ```sh
-./gradlew :app:assembleDebug          # debug APK
-./gradlew :app:testDebugUnitTest      # JVM unit tests (protocol core + sync)
+./gradlew :app:assembleDebug          # build debug APK
+./gradlew :app:testDebugUnitTest      # run JVM unit tests (codecs, parsers, sync, body battery)
 ```
 
-There are no network tests, because the app has no network.
-
-## Status
-
-The protocol core (frame, checksums, byte order, opcodes) is implemented and unit-tested.
-The Room data layer, the GATT transport/command client, the resumable sync engine, and the
-body-battery algorithm are implemented. On-device validation against the physical ring is
-the remaining step.
+There are no network tests because the app has no network layer.
 
 ## Privacy
 
-All health data is stored on-device in Room and is deletable. Nothing leaves the device
-except an explicit, opt-in write to Google Health Connect. See `CONTRIBUTING.md` for the
-rule that phone-home domains must never be reintroduced.
+All health data is stored locally in Room and can be deleted at any time. Nothing
+leaves the device except an explicit, opt-in write to Google Health Connect. See
+`CONTRIBUTING.md` for the rule that phone-home domains must never be reintroduced.
 
 ## License
 
