@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -165,7 +166,36 @@ private fun MainScaffold(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.app_name)) },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val primaryColor = MaterialTheme.colorScheme.primary
+                        val cyanAccent = androidx.compose.ui.graphics.Color(0xFF26C6DA)
+                        androidx.compose.foundation.Canvas(modifier = Modifier.size(22.dp)) {
+                            drawCircle(
+                                brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                                    colors = listOf(cyanAccent, primaryColor),
+                                ),
+                                radius = size.minDimension / 2f - 2.5.dp.toPx(),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                    width = 4.dp.toPx(),
+                                ),
+                            )
+                        }
+                        Text(
+                            text = stringResource(R.string.app_name),
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold,
+                                letterSpacing = (-0.5).sp,
+                                brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                                    colors = listOf(primaryColor, cyanAccent),
+                                ),
+                            ),
+                        )
+                    }
+                },
                 actions = {
                     if (connectionState == com.kschulz.aro.data.ble.ConnectionState.DISCONNECTED) {
                         TextButton(
