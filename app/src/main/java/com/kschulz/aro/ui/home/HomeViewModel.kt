@@ -539,8 +539,16 @@ class HomeViewModel @Inject constructor(
                 val metric = settings.observeUseMetric().first()
                 val result = engine.sync(profileId, time, currentProfile, metric)
                 _lastSync.value = if (result.connected) {
-                    "Synced ${result.daysSynced} day(s): ${result.steps} steps, " +
-                        "${result.bpReadings} BP, ${result.hrSamples} HR, ${result.sleepSessions} sleep"
+                    val clock = time.localClock()
+                    val hhmm = "%02d:%02d".format(clock.hour, clock.minute)
+                    val parts = buildList {
+                        if (result.steps > 0) add("${result.steps} activity day" + if (result.steps == 1) "" else "s")
+                        if (result.hrSamples > 0) add("${result.hrSamples} HR")
+                        if (result.spo2Samples > 0) add("${result.spo2Samples} SpO2")
+                        if (result.bpReadings > 0) add("${result.bpReadings} BP")
+                        if (result.sleepSessions > 0) add("${result.sleepSessions} sleep")
+                    }
+                    if (parts.isEmpty()) "Synced at $hhmm" else "Synced at $hhmm • ${parts.joinToString(", ")}"
                 } else {
                     "Device not connected"
                 }
