@@ -88,6 +88,9 @@ class SyncEngine @Inject constructor(
             bpReadings += pullManualBp(profileId).size
         }
 
+        // Blood oxygen (0xBC 0x2A auto-SpO2 big data across days).
+        val spo2Samples = pullAutoSpo2(profileId, today).size
+
         // Body battery is derived from what we just stored; recompute up to the current hour.
         val windowStartHour = time.epochDayForOffset(days.maxOfOrNull { it } ?: 0) * 24
         val nowHour = time.nowMillis() / 3_600_000L
@@ -100,7 +103,7 @@ class SyncEngine @Inject constructor(
         val finalDistribution = if (distribution != null) queryDistribution() else null
         val confirmed = finalDistribution == null || DistributionBitmap.isComplete(finalDistribution)
         com.kschulz.aro.data.ble.AroDbg.d(
-            "sync done: steps=$steps bp=$bpReadings hr=$hrSamples sleep=$sleepSessions " +
+            "sync done: steps=$steps bp=$bpReadings hr=$hrSamples sleep=$sleepSessions spo2=$spo2Samples " +
                 "finalDistribution=${finalDistribution?.toString(16)} cleared=$confirmed",
         )
 
@@ -111,6 +114,7 @@ class SyncEngine @Inject constructor(
             bpReadings = bpReadings,
             hrSamples = hrSamples,
             sleepSessions = sleepSessions,
+            spo2Samples = spo2Samples,
             distributionCleared = confirmed,
         )
     }
@@ -133,9 +137,15 @@ class SyncEngine @Inject constructor(
         return pullAutoBp(profileId, time, profile).size
     }
 
+    /** Fast incremental refresh for auto-SpO2 (`0xBC 0x2A`), triggered on `0x73` dataType `0x03`. */
+    suspend fun syncAutoSpo2(profileId: Long, time: TimeSource): Int {
+        if (!command.isConnected) return 0
+        return pullAutoSpo2(profileId, time.todayEpochDay()).size
+    }
+
     /**
      * Push user profile personalization (0x0A), target goals (0x21), 24h auto-HR schedule (0x16),
-     * and 24h auto-BP monitoring schedule (0x0C) to the connected ring.
+     * 24h auto-BP schedule (0x0C), and auto-SpO2 monitoring (0x2C) to the connected ring.
      */
     suspend fun syncProfileSettings(
         profile: Profile,
@@ -168,6 +178,9 @@ class SyncEngine @Inject constructor(
 
         val autoBpSwitch = RingPayloads.buildAutoBpSwitchPayload(enabled = true, intervalMinutes = 60)
         command.request(Opcodes.BP_TIMING_MONITOR_SWITCH, autoBpSwitch)
+
+        val autoSpo2Switch = RingPayloads.buildAutoSpo2SettingPayload(enabled = true)
+        command.request(Opcodes.AUTO_SPO2_SETTING, autoSpo2Switch)
     }
 
     private suspend fun queryDistribution(): Int? {
@@ -462,6 +475,22 @@ class SyncEngine @Inject constructor(
         return listOf(session)
     }
 
+    private suspend fun pullAutoSpo2(
+        profileId: Long,
+        todayEpochDay: Long,
+    ): List<com.kschulz.aro.data.model.Spo2Sample> {
+        // Matches LargeDataHandler.syncBloodOxygen(0): 0xBC 0x2A with 1-byte payload [0x00].
+        val rsp = command.request(
+            cmd = Opcodes.AUTO_SPO2_DATA,
+            payload = byteArrayOf(0x00),
+            timeoutMs = STREAM_TIMEOUT_MS,
+        ) ?: return emptyList()
+        if (rsp.error) return emptyList()
+        val samples = RingPayloads.parseAutoSpo2BigData(profileId, todayEpochDay, rsp.payload)
+        if (samples.isNotEmpty()) health.upsertSpo2(profileId, samples)
+        return samples
+    }
+
     private companion object {
         const val STREAM_TIMEOUT_MS = 2_500L
     }
@@ -474,5 +503,6 @@ data class SyncResult(
     val bpReadings: Int = 0,
     val hrSamples: Int = 0,
     val sleepSessions: Int = 0,
+    val spo2Samples: Int = 0,
     val distributionCleared: Boolean = false,
 )

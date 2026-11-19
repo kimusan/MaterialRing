@@ -31,7 +31,7 @@ class RingProtocolCodec {
      * @param payload up to 14 body bytes (zero-padded to 14 bytes).
      */
     fun encode(cmd: Int, payload: ByteArray? = null): Frame {
-        if (cmd == Opcodes.NEW_SLEEP_PROTOCOL) {
+        if (cmd == Opcodes.NEW_SLEEP_PROTOCOL || cmd == Opcodes.AUTO_SPO2_DATA) {
             return encodeLargeData(cmd, payload)
         }
         val frame = ByteArray(CMD_FRAME_LEN)

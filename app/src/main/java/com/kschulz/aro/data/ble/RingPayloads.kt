@@ -1,6 +1,7 @@
 package com.kschulz.aro.data.ble
 
 import com.kschulz.aro.data.model.Profile
+import com.kschulz.aro.data.model.Spo2Sample
 import com.kschulz.aro.data.model.StepDay
 
 /**
@@ -15,6 +16,7 @@ object RingPayloads {
 
     const val MEASURE_TYPE_HEART_RATE = 0x01
     const val MEASURE_TYPE_BLOOD_PRESSURE = 0x02
+    const val MEASURE_TYPE_SPO2 = 0x03
 
     data class ManualBpReading(val epochMs: Long, val sbp: Int, val dbp: Int)
     data class AutoBpReading(val epochMs: Long, val sbp: Int, val dbp: Int, val rawValue: Int)
@@ -888,5 +890,57 @@ object RingPayloads {
         val bpm = ByteOrder.fromBeBytes(record, 4, 2)
         if (tsSeconds == 0 || bpm == 0) return null
         return HeartRateRecord(epochMs = tsSeconds.toLong() * 1000L, bpm = bpm)
+    }
+
+    /**
+     * 0x2C AUTO_SPO2_SETTING request payload (`BloodOxygenSettingReq.getWriteInstance` in smali):
+     *   [0] 0x02 (write sub-command)
+     *   [1] 0x01 = enable auto SpO2, 0x00 = disable
+     */
+    fun buildAutoSpo2SettingPayload(enabled: Boolean): ByteArray =
+        byteArrayOf(0x02, if (enabled) 0x01 else 0x00)
+
+    /**
+     * 0xBC 0x2A auto-SpO2 big-data payload (`BloodOxygenRepository$syncAutoBloodOxygen` /
+     * `healthy/a.smali` lines 191-260):
+     *   Contains N consecutive 49-byte (`0x31`) day records:
+     *     [0] daysAgo (0 = today, 1 = yesterday, ...)
+     *     [1..48] 24 hourly pairs: odd index = minSpO2, even index = maxSpO2.
+     */
+    fun parseAutoSpo2BigData(
+        profileId: Long,
+        todayEpochDay: Long,
+        payload: ByteArray,
+    ): List<Spo2Sample> {
+        val recordSize = 49
+        val dayCount = payload.size / recordSize
+        if (dayCount <= 0) return emptyList()
+        val out = mutableListOf<Spo2Sample>()
+        for (d in 0 until dayCount) {
+            val base = d * recordSize
+            val daysAgo = payload[base].toInt() and 0xFF
+            if (daysAgo > 30) continue
+            val dayStartMs = (todayEpochDay - daysAgo) * SECONDS_PER_DAY * 1000L
+            for (hour in 0 until 24) {
+                val rawMin = payload[base + 1 + hour * 2].toInt() and 0xFF
+                val rawMax = payload[base + 2 + hour * 2].toInt() and 0xFF
+                val lo = minOf(rawMin, rawMax)
+                val hi = maxOf(rawMin, rawMax)
+                if (hi in 50..100) {
+                    val validMin = if (lo in 50..100) lo else hi
+                    val avg = (validMin + hi) / 2
+                    out.add(
+                        Spo2Sample(
+                            profileId = profileId,
+                            epochMs = dayStartMs + hour * 3_600_000L,
+                            percent = avg,
+                            minPercent = validMin,
+                            maxPercent = hi,
+                        ),
+                    )
+                }
+            }
+        }
+        return out
     }
 }

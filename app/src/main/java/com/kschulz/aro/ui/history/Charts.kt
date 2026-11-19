@@ -1339,6 +1339,85 @@ private fun BloodPressureDualChart(
     }
 }
 
+val Spo2Teal = Color(0xFF00ACC1)
+
+/**
+ * Blood Oxygen (SpO2) Card:
+ * - Shows latest / selected SpO2 %, interactive bar chart on a 0..100% scale, and
+ *   Min / Avg / Max summary stats.
+ */
+@Composable
+fun Spo2ChartCard(
+    samples: List<com.kschulz.aro.data.model.Spo2Sample>,
+    period: HistoryPeriod = HistoryPeriod.DAY,
+    modifier: Modifier = Modifier,
+) {
+    val sorted = remember(samples) { samples.sortedBy { it.epochMs } }
+    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+
+    ChartCard(
+        title = "Blood Oxygen (SpO2)",
+        summary = if (sorted.isEmpty()) {
+            "Tap Measure on Home or pull to sync"
+        } else {
+            val avg = sorted.map { it.percent }.average().toInt()
+            "Latest ${sorted.last().percent}%  •  Avg $avg%"
+        },
+        accentColor = Spo2Teal,
+        modifier = modifier,
+    ) {
+        if (sorted.isEmpty()) {
+            EmptyChartText()
+        } else {
+            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                Column {
+                    Text(
+                        text = if (selected.minPercent != selected.maxPercent) {
+                            "${selected.minPercent}–${selected.maxPercent}%"
+                        } else {
+                            "${selected.percent}%"
+                        },
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Spo2Teal,
+                    )
+                    Text(
+                        text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            InteractiveBarChart(
+                values = sorted.map { it.percent },
+                selectedIndex = selectedIdx,
+                onSelectIndex = { selectedIdx = it },
+                barColor = Spo2Teal,
+                fixedMax = 100,
+                height = 145.dp,
+                formatYLabel = { "$it%" },
+            )
+
+            Spacer(Modifier.height(10.dp))
+            val minVal = sorted.minOf { it.minPercent }
+            val avgVal = sorted.map { it.percent }.average().toInt()
+            val maxVal = sorted.maxOf { it.maxPercent }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                StatMiniBox("Min", "$minVal%", Spo2Teal, Modifier.weight(1f))
+                StatMiniBox("Avg", "$avgVal%", Spo2Teal, Modifier.weight(1f))
+                StatMiniBox("Max", "$maxVal%", DistanceGreen, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
 /**
  * Body Battery Card (`QBodyBatteryBarChartView.smali`):
  * - Daily 24-hour / Weekly / Monthly sky-blue (`#1296DB`) bar chart on a 0..100 scale with

@@ -4,6 +4,7 @@ import com.kschulz.aro.data.model.BloodPressure
 import com.kschulz.aro.data.model.HeartRateSample
 import com.kschulz.aro.data.model.SleepSegment
 import com.kschulz.aro.data.model.SleepSession
+import com.kschulz.aro.data.model.Spo2Sample
 import com.kschulz.aro.data.model.StepDay
 
 /**
@@ -17,4 +18,5 @@ interface HealthStore {
     suspend fun upsertBloodPressure(profileId: Long, readings: List<BloodPressure>)
     suspend fun upsertHeartRate(profileId: Long, samples: List<HeartRateSample>)
     suspend fun upsertSleep(profileId: Long, session: SleepSession, segments: List<SleepSegment>)
+    suspend fun upsertSpo2(profileId: Long, samples: List<Spo2Sample>) {}
 }

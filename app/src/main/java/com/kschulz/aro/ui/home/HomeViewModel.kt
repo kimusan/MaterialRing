@@ -15,6 +15,7 @@ import com.kschulz.aro.data.model.HeartRateSample
 import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.Ring
 import com.kschulz.aro.data.model.SleepSession
+import com.kschulz.aro.data.model.Spo2Sample
 import com.kschulz.aro.data.model.StepDay
 import com.kschulz.aro.data.repository.DeviceRepository
 import com.kschulz.aro.data.repository.HealthRepository
@@ -45,6 +46,7 @@ data class LiveMeasurementState(
     val livePulse: Int = 0,
     val liveSbp: Int = 0,
     val liveDbp: Int = 0,
+    val liveSpo2: Int = 0,
     val statusMessage: String? = null,
     val wearingError: Boolean = false,
 )
@@ -90,6 +92,10 @@ class HomeViewModel @Inject constructor(
 
     val latestBp: StateFlow<BloodPressure?> =
         health.observeLatestBloodPressure()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val latestSpo2: StateFlow<Spo2Sample?> =
+        health.observeLatestSpo2()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val latestSleep: StateFlow<SleepSession?> =
@@ -166,6 +172,7 @@ class HomeViewModel @Inject constructor(
                     0x04 -> engine.syncTodaySteps(profileId, time)
                     0x01 -> engine.syncTodayHeartRate(profileId, time)
                     0x02 -> engine.syncAutoBp(profileId, time, activeProfile.value)
+                    0x03 -> engine.syncAutoSpo2(profileId, time)
                 }
             }
         }
@@ -219,6 +226,10 @@ class HomeViewModel @Inject constructor(
         startLiveMeasurement(RingPayloads.MEASURE_TYPE_HEART_RATE)
     }
 
+    fun startSpo2Measurement() {
+        startLiveMeasurement(RingPayloads.MEASURE_TYPE_SPO2)
+    }
+
     fun stopMeasurement() {
         val current = _measurement.value
         measurementJob?.cancel()
@@ -266,10 +277,13 @@ class HomeViewModel @Inject constructor(
                 active = true,
                 type = type,
                 secondsRemaining = MEASURE_DURATION_SECONDS,
-                statusMessage = if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
-                    "Measuring blood pressure... Keep your hand still at heart level."
-                } else {
-                    "Measuring heart rate... Keep your hand still."
+                statusMessage = when (type) {
+                    RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE ->
+                        "Measuring blood pressure... Keep your hand still at heart level."
+                    RingPayloads.MEASURE_TYPE_SPO2 ->
+                        "Measuring blood oxygen (SpO2)... Keep your hand still."
+                    else ->
+                        "Measuring heart rate... Keep your hand still."
                 },
             )
 
@@ -284,6 +298,11 @@ class HomeViewModel @Inject constructor(
                             wearingError = true,
                             statusMessage = "Wearing error: make sure the ring sensors are snug against your finger.",
                         )
+                        return@collect
+                    }
+                    if (type == RingPayloads.MEASURE_TYPE_SPO2) {
+                        val spo2 = if (pkt.value in 50..100) pkt.value else _measurement.value.liveSpo2
+                        _measurement.value = _measurement.value.copy(liveSpo2 = spo2)
                         return@collect
                     }
                     val pulse = if (pkt.value > 0) pkt.value else _measurement.value.livePulse
@@ -358,60 +377,88 @@ class HomeViewModel @Inject constructor(
                 val finalState = _measurement.value
                 val finalPulse = finalState.livePulse.takeIf { it > 0 } ?: liveHeartRate.value
 
-                if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
-                    val (finalSbp, finalDbp) = when {
-                        finalState.liveSbp > 0 && finalState.liveDbp > 0 ->
-                            finalState.liveSbp to finalState.liveDbp
-                        finalPulse > 0 ->
-                            RingPayloads.estimateBpFromPpgRaw(finalPulse, age, sbpBase, dbpBase)
-                        else ->
-                            sbpBase to dbpBase
-                    }
-                    command.send(
-                        Opcodes.STOP_HEART_RATE,
-                        RingPayloads.buildStopMeasurementPayload(type, finalSbp, finalDbp),
-                    )
-                    health.upsertBloodPressure(
-                        profileId,
-                        listOf(BloodPressure(profileId, nowMs, finalSbp, finalDbp, BpSource.MANUAL)),
-                    )
-                    if (finalPulse > 0) {
-                        health.upsertHeartRate(
-                            profileId,
-                            listOf(HeartRateSample(profileId, nowMs, finalPulse)),
+                when (type) {
+                    RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE -> {
+                        val (finalSbp, finalDbp) = when {
+                            finalState.liveSbp > 0 && finalState.liveDbp > 0 ->
+                                finalState.liveSbp to finalState.liveDbp
+                            finalPulse > 0 ->
+                                RingPayloads.estimateBpFromPpgRaw(finalPulse, age, sbpBase, dbpBase)
+                            else ->
+                                sbpBase to dbpBase
+                        }
+                        command.send(
+                            Opcodes.STOP_HEART_RATE,
+                            RingPayloads.buildStopMeasurementPayload(type, finalSbp, finalDbp),
                         )
-                    }
-                    _measurement.value = finalState.copy(
-                        active = false,
-                        secondsRemaining = 0,
-                        liveSbp = finalSbp,
-                        liveDbp = finalDbp,
-                        livePulse = finalPulse,
-                        statusMessage = "Recorded manual BP: $finalSbp/$finalDbp mmHg" +
-                            (if (finalPulse > 0) " ($finalPulse bpm)" else ""),
-                    )
-                } else {
-                    command.send(
-                        Opcodes.STOP_HEART_RATE,
-                        RingPayloads.buildStopMeasurementPayload(type, finalPulse, 0),
-                    )
-                    if (finalPulse > 0) {
-                        health.upsertHeartRate(
+                        health.upsertBloodPressure(
                             profileId,
-                            listOf(HeartRateSample(profileId, nowMs, finalPulse)),
+                            listOf(BloodPressure(profileId, nowMs, finalSbp, finalDbp, BpSource.MANUAL)),
                         )
+                        if (finalPulse > 0) {
+                            health.upsertHeartRate(
+                                profileId,
+                                listOf(HeartRateSample(profileId, nowMs, finalPulse)),
+                            )
+                        }
                         _measurement.value = finalState.copy(
                             active = false,
                             secondsRemaining = 0,
+                            liveSbp = finalSbp,
+                            liveDbp = finalDbp,
                             livePulse = finalPulse,
-                            statusMessage = "Recorded heart rate: $finalPulse bpm",
+                            statusMessage = "Recorded manual BP: $finalSbp/$finalDbp mmHg" +
+                                (if (finalPulse > 0) " ($finalPulse bpm)" else ""),
                         )
-                    } else {
-                        _measurement.value = finalState.copy(
-                            active = false,
-                            secondsRemaining = 0,
-                            statusMessage = "No heart rate signal detected. Check ring placement.",
+                    }
+                    RingPayloads.MEASURE_TYPE_SPO2 -> {
+                        val finalSpo2 = finalState.liveSpo2
+                        command.send(
+                            Opcodes.STOP_HEART_RATE,
+                            RingPayloads.buildStopMeasurementPayload(type, finalSpo2, 0),
                         )
+                        if (finalSpo2 in 50..100) {
+                            health.upsertSpo2(
+                                profileId,
+                                listOf(Spo2Sample(profileId, nowMs, finalSpo2)),
+                            )
+                            _measurement.value = finalState.copy(
+                                active = false,
+                                secondsRemaining = 0,
+                                liveSpo2 = finalSpo2,
+                                statusMessage = "Recorded blood oxygen: $finalSpo2%",
+                            )
+                        } else {
+                            _measurement.value = finalState.copy(
+                                active = false,
+                                secondsRemaining = 0,
+                                statusMessage = "No SpO2 signal detected. Check ring placement.",
+                            )
+                        }
+                    }
+                    else -> {
+                        command.send(
+                            Opcodes.STOP_HEART_RATE,
+                            RingPayloads.buildStopMeasurementPayload(type, finalPulse, 0),
+                        )
+                        if (finalPulse > 0) {
+                            health.upsertHeartRate(
+                                profileId,
+                                listOf(HeartRateSample(profileId, nowMs, finalPulse)),
+                            )
+                            _measurement.value = finalState.copy(
+                                active = false,
+                                secondsRemaining = 0,
+                                livePulse = finalPulse,
+                                statusMessage = "Recorded heart rate: $finalPulse bpm",
+                            )
+                        } else {
+                            _measurement.value = finalState.copy(
+                                active = false,
+                                secondsRemaining = 0,
+                                statusMessage = "No heart rate signal detected. Check ring placement.",
+                            )
+                        }
                     }
                 }
             } finally {

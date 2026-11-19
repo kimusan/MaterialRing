@@ -17,7 +17,11 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AroDatabase =
         Room.databaseBuilder(context, AroDatabase::class.java, AroDatabase.NAME)
-            .addMigrations(AroDatabase.MIGRATION_1_2, AroDatabase.MIGRATION_2_3)
+            .addMigrations(
+                AroDatabase.MIGRATION_1_2,
+                AroDatabase.MIGRATION_2_3,
+                AroDatabase.MIGRATION_3_4,
+            )
             .fallbackToDestructiveMigration()
             .build()
 
@@ -44,4 +48,7 @@ object DatabaseModule {
 
     @Provides
     fun provideBodyBatteryDao(db: AroDatabase) = db.bodyBatteryDao()
+
+    @Provides
+    fun provideSpo2Dao(db: AroDatabase) = db.spo2Dao()
 }

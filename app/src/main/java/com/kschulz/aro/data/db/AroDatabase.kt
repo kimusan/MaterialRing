@@ -13,6 +13,7 @@ import com.kschulz.aro.data.model.Profile
 import com.kschulz.aro.data.model.Ring
 import com.kschulz.aro.data.model.SleepSegment
 import com.kschulz.aro.data.model.SleepSession
+import com.kschulz.aro.data.model.Spo2Sample
 import com.kschulz.aro.data.model.StepDay
 
 @Database(
@@ -26,8 +27,9 @@ import com.kschulz.aro.data.model.StepDay
         HeartRateSample::class,
         BloodPressure::class,
         BodyBatteryPoint::class,
+        Spo2Sample::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 @TypeConverters(BpSourceConverter::class)
@@ -40,6 +42,7 @@ abstract class AroDatabase : RoomDatabase() {
     abstract fun heartRateDao(): HeartRateDao
     abstract fun bloodPressureDao(): BloodPressureDao
     abstract fun bodyBatteryDao(): BodyBatteryDao
+    abstract fun spo2Dao(): Spo2Dao
 
     companion object {
         const val NAME = "aro.db"
@@ -66,6 +69,20 @@ abstract class AroDatabase : RoomDatabase() {
                 db.execSQL(
                     "UPDATE rings SET isActive = 1 WHERE macAddress = " +
                         "(SELECT macAddress FROM rings ORDER BY boundAtEpochMs DESC LIMIT 1)",
+                )
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `spo2_samples` (" +
+                        "`profileId` INTEGER NOT NULL, " +
+                        "`epochMs` INTEGER NOT NULL, " +
+                        "`percent` INTEGER NOT NULL, " +
+                        "`minPercent` INTEGER NOT NULL, " +
+                        "`maxPercent` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`profileId`, `epochMs`))",
                 )
             }
         }

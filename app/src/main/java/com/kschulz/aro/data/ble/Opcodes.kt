@@ -37,6 +37,10 @@ object Opcodes {
     const val GET_BAND_PRESSURE = 0x14
     const val PRESSURE_SETTING = 0x36
 
+    // Blood oxygen (SpO2)
+    const val AUTO_SPO2_DATA = 0x2A
+    const val AUTO_SPO2_SETTING = 0x2C
+
     // Display / misc / autonomous notifications
     const val GET_PERSONALIZATION_SETTING = 0x17
     const val GET_BRIGHTNESS = 0x1B

@@ -4,6 +4,7 @@ import com.kschulz.aro.data.db.BodyBatteryDao
 import com.kschulz.aro.data.db.BloodPressureDao
 import com.kschulz.aro.data.db.HeartRateDao
 import com.kschulz.aro.data.db.SleepDao
+import com.kschulz.aro.data.db.Spo2Dao
 import com.kschulz.aro.data.db.StepDayDao
 import com.kschulz.aro.data.model.BodyBatteryPoint
 import com.kschulz.aro.data.model.BloodPressure
@@ -11,6 +12,7 @@ import com.kschulz.aro.data.model.BpSource
 import com.kschulz.aro.data.model.HeartRateSample
 import com.kschulz.aro.data.model.SleepSegment
 import com.kschulz.aro.data.model.SleepSession
+import com.kschulz.aro.data.model.Spo2Sample
 import com.kschulz.aro.data.model.StepDay
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -32,6 +34,7 @@ class HealthRepository @Inject constructor(
     private val heartRate: HeartRateDao,
     private val bloodPressure: BloodPressureDao,
     private val bodyBattery: BodyBatteryDao,
+    private val spo2: Spo2Dao,
     private val settings: SettingsRepository,
 ) : HealthStore {
     // ----- Steps -----
@@ -109,6 +112,17 @@ class HealthRepository @Inject constructor(
 
     suspend fun upsertBodyBattery(profileId: Long, points: List<BodyBatteryPoint>) {
         if (points.isNotEmpty()) bodyBattery.upsertAll(points)
+    }
+
+    // ----- Blood oxygen (SpO2) -----
+    fun observeSpo2Between(from: Long, to: Long): Flow<List<Spo2Sample>> =
+        scoped(emptyList()) { pid -> spo2.observeBetween(pid, from, to) }
+
+    fun observeLatestSpo2(): Flow<Spo2Sample?> =
+        scoped(null) { pid -> spo2.observeLatest(pid) }
+
+    override suspend fun upsertSpo2(profileId: Long, samples: List<Spo2Sample>) {
+        if (samples.isNotEmpty()) spo2.upsertAll(samples)
     }
 
     /** Runs [read] against the active profile, emitting [empty] when there is none. */

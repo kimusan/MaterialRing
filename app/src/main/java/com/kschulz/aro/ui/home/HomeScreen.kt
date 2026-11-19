@@ -73,6 +73,7 @@ fun HomeScreen(
     val battery by viewModel.battery.collectAsStateWithLifecycle()
     val today by viewModel.today.collectAsStateWithLifecycle()
     val bp by viewModel.latestBp.collectAsStateWithLifecycle()
+    val spo2 by viewModel.latestSpo2.collectAsStateWithLifecycle()
     val sleep by viewModel.latestSleep.collectAsStateWithLifecycle()
     val batteryPoints by viewModel.bodyBattery.collectAsStateWithLifecycle()
     val activeProfile by viewModel.activeProfile.collectAsStateWithLifecycle()
@@ -308,6 +309,8 @@ fun HomeScreen(
                     onRetry = {
                         if (measurement.type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
                             viewModel.startBpMeasurement()
+                        } else if (measurement.type == RingPayloads.MEASURE_TYPE_SPO2) {
+                            viewModel.startSpo2Measurement()
                         } else {
                             viewModel.startHrMeasurement()
                         }
@@ -396,6 +399,23 @@ fun HomeScreen(
                 )
             }
 
+            MetricTile(
+                modifier = Modifier.fillMaxWidth(),
+                icon = Icons.Filled.Bloodtype,
+                title = "Blood oxygen (SpO2)",
+                value = spo2?.let { "${it.percent}%" } ?: "No reading",
+                subtitle = spo2?.let {
+                    when {
+                        it.percent >= 95 -> "Normal"
+                        it.percent >= 90 -> "Slightly low"
+                        else -> "Low"
+                    }
+                } ?: "Tap Measure to read SpO2 from ring",
+                actionLabel = if (measurement.active) null else "Measure",
+                onAction = { viewModel.startSpo2Measurement() },
+                onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.SPO2) },
+            )
+
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricTile(
                     modifier = Modifier.weight(1f),
@@ -479,6 +499,7 @@ private fun LiveMeasurementCard(
     onRetry: () -> Unit,
 ) {
     val isBp = state.type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE
+    val isSpo2 = state.type == RingPayloads.MEASURE_TYPE_SPO2
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -499,7 +520,11 @@ private fun LiveMeasurementCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = if (isBp) "Blood Pressure Measurement" else "Heart Rate Measurement",
+                    text = when {
+                        isBp -> "Blood Pressure Measurement"
+                        isSpo2 -> "Blood Oxygen (SpO2) Measurement"
+                        else -> "Heart Rate Measurement"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                 )
                 if (state.active) {
@@ -518,20 +543,26 @@ private fun LiveMeasurementCard(
                 )
             }
 
-            val liveReadout = if (isBp) {
-                if (state.liveSbp > 0 && state.liveDbp > 0) {
-                    "${state.liveSbp}/${state.liveDbp} mmHg" +
-                        (if (state.livePulse > 0) "  •  ${state.livePulse} bpm" else "")
-                } else if (state.livePulse > 0) {
-                    "Pulse ${state.livePulse} bpm — estimating BP..."
-                } else {
-                    "Acquiring PPG signal..."
+            val liveReadout = when {
+                isBp -> {
+                    if (state.liveSbp > 0 && state.liveDbp > 0) {
+                        "${state.liveSbp}/${state.liveDbp} mmHg" +
+                            (if (state.livePulse > 0) "  •  ${state.livePulse} bpm" else "")
+                    } else if (state.livePulse > 0) {
+                        "Pulse ${state.livePulse} bpm — estimating BP..."
+                    } else {
+                        "Acquiring PPG signal..."
+                    }
                 }
-            } else {
-                if (state.livePulse > 0) "${state.livePulse} bpm" else "Acquiring PPG signal..."
+                isSpo2 -> {
+                    if (state.liveSpo2 > 0) "${state.liveSpo2}%" else "Acquiring SpO2 signal..."
+                }
+                else -> {
+                    if (state.livePulse > 0) "${state.livePulse} bpm" else "Acquiring PPG signal..."
+                }
             }
 
-            if (state.active || state.liveSbp > 0 || state.livePulse > 0) {
+            if (state.active || state.liveSbp > 0 || state.livePulse > 0 || state.liveSpo2 > 0) {
                 Text(
                     text = liveReadout,
                     style = MaterialTheme.typography.headlineSmall,
