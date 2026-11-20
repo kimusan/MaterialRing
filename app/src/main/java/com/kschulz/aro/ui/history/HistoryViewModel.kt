@@ -204,7 +204,7 @@ class HistoryViewModel @Inject constructor(
                         return@launch
                     }
                 }
-                command.request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+                command.refreshBattery()
                 val profile = profiles.getById(profileId)
                 val metric = settings.observeUseMetric().first()
                 engine.sync(profileId, time, profile, metric)

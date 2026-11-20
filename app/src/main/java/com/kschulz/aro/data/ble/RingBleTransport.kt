@@ -486,7 +486,8 @@ class RingBleTransport @Inject constructor(
                 if (g !== gatt) return
             }
             if (characteristic.uuid == GattUuids.COMMAND_NOTIFY_CHARACTERISTIC ||
-                characteristic.uuid == GattUuids.NOTIFICATION_CHARACTERISTIC
+                characteristic.uuid == GattUuids.NOTIFICATION_CHARACTERISTIC ||
+                characteristic.uuid == GattUuids.JRING_NOTIFY_CHARACTERISTIC
             ) {
                 AroDbg.d("notify ${value.size}B ${AroDbg.hex(value)}")
                 _notifies.tryEmit(value)

@@ -258,7 +258,7 @@ class SyncEngine @Inject constructor(
         command.request(
             com.kschulz.aro.data.ble.JRingProtocol.CMD_APP_STATE,
             com.kschulz.aro.data.ble.JRingProtocol.buildAppStatePayload(foreground = true),
-            timeoutMs = STREAM_TIMEOUT_MS,
+            timeoutMs = 300L,
         )
         command.request(
             com.kschulz.aro.data.ble.JRingProtocol.CMD_SET_TIME,

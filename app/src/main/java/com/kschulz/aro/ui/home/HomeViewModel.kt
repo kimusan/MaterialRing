@@ -296,22 +296,26 @@ class HomeViewModel @Inject constructor(
         measurementJob = null
         if (current.active) {
             viewModelScope.launch {
-                if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
-                    command.send(
-                        com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
-                        com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(
-                            com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_STOP,
-                        ),
-                    )
-                } else {
-                    command.send(
-                        Opcodes.STOP_HEART_RATE,
-                        RingPayloads.buildStopMeasurementPayload(current.type, 0, 0),
-                    )
-                }
+                sendStopLiveMeasurement(current.type, 0, 0)
             }
         }
         _measurement.value = LiveMeasurementState()
+    }
+
+    private suspend fun sendStopLiveMeasurement(type: Int, value1: Int, value2: Int) {
+        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
+            command.send(
+                com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
+                com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(
+                    com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_STOP,
+                ),
+            )
+        } else {
+            command.send(
+                Opcodes.STOP_HEART_RATE,
+                RingPayloads.buildStopMeasurementPayload(type, value1, value2),
+            )
+        }
     }
 
     private fun startLiveMeasurement(type: Int) {
@@ -446,10 +450,7 @@ class HomeViewModel @Inject constructor(
                 }
 
                 if (streamAbortError) {
-                    command.send(
-                        Opcodes.STOP_HEART_RATE,
-                        RingPayloads.buildStopMeasurementPayload(type, 0, 0),
-                    )
+                    sendStopLiveMeasurement(type, 0, 0)
                     return@launch
                 }
 
@@ -467,10 +468,7 @@ class HomeViewModel @Inject constructor(
                             else ->
                                 sbpBase to dbpBase
                         }
-                        command.send(
-                            Opcodes.STOP_HEART_RATE,
-                            RingPayloads.buildStopMeasurementPayload(type, finalSbp, finalDbp),
-                        )
+                        sendStopLiveMeasurement(type, finalSbp, finalDbp)
                         health.upsertBloodPressure(
                             profileId,
                             listOf(BloodPressure(profileId, nowMs, finalSbp, finalDbp, BpSource.MANUAL)),
@@ -493,10 +491,7 @@ class HomeViewModel @Inject constructor(
                     }
                     RingPayloads.MEASURE_TYPE_SPO2 -> {
                         val finalSpo2 = finalState.liveSpo2
-                        command.send(
-                            Opcodes.STOP_HEART_RATE,
-                            RingPayloads.buildStopMeasurementPayload(type, finalSpo2, 0),
-                        )
+                        sendStopLiveMeasurement(type, finalSpo2, 0)
                         if (finalSpo2 in 50..100) {
                             health.upsertSpo2(
                                 profileId,
@@ -517,10 +512,7 @@ class HomeViewModel @Inject constructor(
                         }
                     }
                     else -> {
-                        command.send(
-                            Opcodes.STOP_HEART_RATE,
-                            RingPayloads.buildStopMeasurementPayload(type, finalPulse, 0),
-                        )
+                        sendStopLiveMeasurement(type, finalPulse, 0)
                         if (finalPulse > 0) {
                             health.upsertHeartRate(
                                 profileId,
