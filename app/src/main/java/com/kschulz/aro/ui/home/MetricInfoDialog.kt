@@ -91,7 +91,7 @@ enum class MetricInfoTopic(
     TEMPERATURE(
         title = "Skin & Body Temperature (°C)",
         summary = "Measures finger skin-surface temperature and estimated core body temperature.",
-        howCalculated = "Read directly from the SMART_RING dual-channel thermistor (0x37/0x38).",
+        howCalculated = "Read directly from the ring's built-in dual-channel temperature sensor when supported by your ring hardware.",
         normalRanges = listOf(
             "Normal body temp: 36.1–37.2 °C (97.0–99.0 °F)",
             "Normal finger skin temp: 31.0–35.5 °C",
@@ -102,7 +102,7 @@ enum class MetricInfoTopic(
     STRESS(
         title = "Stress Score (1–100)",
         summary = "Estimates physiological stress load across the day on a 1–100 scale.",
-        howCalculated = "Derived locally on your phone from heart-rate elevation above your resting baseline (works on both Oudmon/QRing and SMART_RING devices).",
+        howCalculated = "Derived locally on your phone from heart-rate elevation above your resting baseline.",
         normalRanges = listOf(
             "1–29: Relaxed / restful state",
             "30–59: Normal everyday load",

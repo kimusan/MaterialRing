@@ -1490,7 +1490,7 @@ fun TemperatureChartCard(
     ChartCard(
         title = "Temperature",
         summary = if (sorted.isEmpty()) {
-            "SMART_RING dual-thermistor body & skin temp"
+            "Body & skin temperature trend"
         } else {
             val latest = sorted.last()
             "Latest %.1f °C body  •  %.1f °C skin".format(latest.bodyCelsius, latest.surfaceCelsius)

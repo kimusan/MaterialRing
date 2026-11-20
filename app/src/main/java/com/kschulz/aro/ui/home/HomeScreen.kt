@@ -77,7 +77,7 @@ fun HomeScreen(
     val spo2 by viewModel.latestSpo2.collectAsStateWithLifecycle()
     val temperature by viewModel.latestTemperature.collectAsStateWithLifecycle()
     val stress by viewModel.latestStress.collectAsStateWithLifecycle()
-    val activeProtocol by viewModel.activeProtocol.collectAsStateWithLifecycle()
+    val featureSupport by viewModel.featureSupport.collectAsStateWithLifecycle()
     val sleep by viewModel.latestSleep.collectAsStateWithLifecycle()
     val batteryPoints by viewModel.bodyBattery.collectAsStateWithLifecycle()
     val activeProfile by viewModel.activeProfile.collectAsStateWithLifecycle()
@@ -352,10 +352,14 @@ fun HomeScreen(
                 }
             }
 
+            val activeRingName = boundRing?.displayName?.ifBlank { "this ring" } ?: "this ring"
+            val unavailableForRing = "Unavailable for $activeRingName"
+
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 val hrDisplay = when {
                     liveHr > 0 -> "$liveHr bpm"
                     latestHr != null -> "${latestHr!!.bpm} bpm"
+                    !featureSupport.heartRate -> "Unavailable"
                     else -> "No reading"
                 }
                 MetricTile(
@@ -365,6 +369,8 @@ fun HomeScreen(
                     value = hrDisplay,
                     subtitle = if (liveHr > 0) "Live sensor" else latestHr?.let { "Last recorded" },
                     live = liveHr > 0,
+                    available = featureSupport.heartRate,
+                    unavailableNote = unavailableForRing,
                     actionLabel = if (measurement.active) null else "Measure",
                     onAction = { viewModel.startHrMeasurement() },
                     onInfo = { infoTopic = MetricInfoTopic.HEART_RATE },
@@ -374,11 +380,14 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Bloodtype,
                     title = "Blood pressure",
-                    value = bp?.let { "${it.sbp}/${it.dbp} mmHg" } ?: "None",
+                    value = bp?.let { "${it.sbp}/${it.dbp} mmHg" }
+                        ?: if (!featureSupport.bloodPressure) "Unavailable" else "None",
                     subtitle = bp?.let {
                         val src = if (it.source == BpSource.MANUAL) "Manual" else "Auto"
                         "$src • ${bpCategoryLabel(it.sbp, it.dbp)}"
                     },
+                    available = featureSupport.bloodPressure,
+                    unavailableNote = unavailableForRing,
                     actionLabel = if (measurement.active) null else "Measure",
                     onAction = { viewModel.startBpMeasurement() },
                     onInfo = { infoTopic = MetricInfoTopic.BLOOD_PRESSURE },
@@ -390,7 +399,8 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth(),
                 icon = Icons.Filled.Bloodtype,
                 title = "Blood oxygen (SpO2)",
-                value = spo2?.let { "${it.percent}%" } ?: "No reading",
+                value = spo2?.let { "${it.percent}%" }
+                    ?: if (!featureSupport.spo2) "Unavailable" else "No reading",
                 subtitle = spo2?.let {
                     when {
                         it.percent >= 95 -> "Normal"
@@ -398,6 +408,8 @@ fun HomeScreen(
                         else -> "Low"
                     }
                 } ?: "Tap Measure to read SpO2 from ring",
+                available = featureSupport.spo2,
+                unavailableNote = unavailableForRing,
                 actionLabel = if (measurement.active) null else "Measure",
                 onAction = { viewModel.startSpo2Measurement() },
                 onInfo = { infoTopic = MetricInfoTopic.SPO2 },
@@ -409,8 +421,11 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.FitnessCenter,
                     title = "Steps today",
-                    value = today?.let { "${it.steps} steps" } ?: "No data",
+                    value = today?.let { "${it.steps} steps" }
+                        ?: if (!featureSupport.steps) "Unavailable" else "No data",
                     subtitle = today?.let { "${it.calories} kcal • ${it.distanceMeters} m (goal $stepGoal)" },
+                    available = featureSupport.steps,
+                    unavailableNote = unavailableForRing,
                     onInfo = { infoTopic = MetricInfoTopic.ACTIVITY },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.STEPS) },
                 )
@@ -421,8 +436,10 @@ fun HomeScreen(
                     value = sleep?.let {
                         val min = sleepDurationMin(it)
                         "${min / 60}h ${min % 60}m"
-                    } ?: "No data",
+                    } ?: if (!featureSupport.sleep) "Unavailable" else "No data",
                     subtitle = activeProfile?.let { "Goal ${it.goalSleepMinutes / 60}h" },
+                    available = featureSupport.sleep,
+                    unavailableNote = unavailableForRing,
                     onInfo = { infoTopic = MetricInfoTopic.SLEEP },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.SLEEP) },
                 )
@@ -433,7 +450,8 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Favorite,
                     title = "Stress",
-                    value = stress?.let { "${it.score}/100" } ?: "No data",
+                    value = stress?.let { "${it.score}/100" }
+                        ?: if (!featureSupport.stress) "Unavailable" else "No data",
                     subtitle = stress?.let {
                         when {
                             it.score < 30 -> "Relaxed"
@@ -442,30 +460,26 @@ fun HomeScreen(
                             else -> "High"
                         }
                     } ?: "Derived from HR",
+                    available = featureSupport.stress,
+                    unavailableNote = unavailableForRing,
                     onInfo = { infoTopic = MetricInfoTopic.STRESS },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.STRESS) },
                 )
-                if (activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING || temperature != null) {
-                    MetricTile(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Filled.Bloodtype,
-                        title = "Temperature",
-                        value = temperature?.let { "%.1f °C".format(it.bodyCelsius) } ?: "No reading",
-                        subtitle = temperature?.let { "Skin %.1f °C".format(it.surfaceCelsius) }
-                            ?: "SMART_RING sensor",
-                        actionLabel = if (
-                            !measurement.active &&
-                            activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING
-                        ) {
-                            "Measure"
-                        } else {
-                            null
-                        },
-                        onAction = { viewModel.startTemperatureMeasurement() },
-                        onInfo = { infoTopic = MetricInfoTopic.TEMPERATURE },
-                        onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.TEMPERATURE) },
-                    )
-                }
+                MetricTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Bloodtype,
+                    title = "Temperature",
+                    value = temperature?.let { "%.1f °C".format(it.bodyCelsius) }
+                        ?: if (!featureSupport.temperature) "Unavailable" else "No reading",
+                    subtitle = temperature?.let { "Skin %.1f °C".format(it.surfaceCelsius) }
+                        ?: "Tap Measure to read",
+                    available = featureSupport.temperature,
+                    unavailableNote = unavailableForRing,
+                    actionLabel = if (!measurement.active) "Measure" else null,
+                    onAction = { viewModel.startTemperatureMeasurement() },
+                    onInfo = { infoTopic = MetricInfoTopic.TEMPERATURE },
+                    onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.TEMPERATURE) },
+                )
             }
 
             Card(
@@ -670,12 +684,27 @@ private fun MetricTile(
     value: String,
     subtitle: String? = null,
     live: Boolean = false,
+    available: Boolean = true,
+    unavailableNote: String? = null,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
     onInfo: (() -> Unit)? = null,
     onClick: () -> Unit = {},
 ) {
-    Card(modifier = modifier, onClick = onClick) {
+    val contentAlpha = if (available) 1f else 0.55f
+    val cardColors = if (available) {
+        CardDefaults.cardColors()
+    } else {
+        CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        )
+    }
+
+    Card(
+        modifier = modifier,
+        colors = cardColors,
+        onClick = onClick,
+    ) {
         Column(Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -683,8 +712,12 @@ private fun MetricTile(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    if (live) {
+                    Icon(
+                        icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = contentAlpha),
+                    )
+                    if (live && available) {
                         Icon(
                             Icons.Filled.FiberManualRecord,
                             contentDescription = "Live",
@@ -694,7 +727,7 @@ private fun MetricTile(
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (actionLabel != null && onAction != null) {
+                    if (available && actionLabel != null && onAction != null) {
                         TextButton(onClick = onAction) {
                             Text(actionLabel)
                         }
@@ -707,14 +740,23 @@ private fun MetricTile(
             Text(
                 title,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha),
             )
-            Text(value, style = MaterialTheme.typography.headlineSmall)
-            if (subtitle != null) {
+            Text(
+                value,
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha),
+            )
+            val resolvedSubtitle = if (!available && unavailableNote != null) {
+                unavailableNote
+            } else {
+                subtitle
+            }
+            if (resolvedSubtitle != null) {
                 Text(
-                    text = subtitle,
+                    text = resolvedSubtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (available) 1f else 0.75f),
                 )
             }
         }

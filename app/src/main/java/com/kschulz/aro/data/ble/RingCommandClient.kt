@@ -70,10 +70,18 @@ class RingCommandClient @Inject constructor(
     val activeProtocolFlow: StateFlow<RingProtocol>
         get() = transport.activeProtocol
 
+    private val _featureSupport = MutableStateFlow(RingFeatureSupport.defaultsFor(transport.activeProtocol.value))
+    val featureSupport: StateFlow<RingFeatureSupport> = _featureSupport.asStateFlow()
+
     private var largeDataBuffer: ByteArray? = null
     private var largeDataExpectedLen: Int = 0
 
     init {
+        scope.launch {
+            transport.activeProtocol.collect { proto ->
+                _featureSupport.value = RingFeatureSupport.defaultsFor(proto)
+            }
+        }
         scope.launch {
             transport.notifies.collect { raw ->
                 if (activeProtocol == RingProtocol.JRING) {
@@ -281,6 +289,16 @@ class RingCommandClient @Inject constructor(
 
     private fun route(parsed: ParsedFrame) {
         when (parsed.cmd) {
+            Opcodes.SET_DEVICE_TIME -> {
+                if (!parsed.error && parsed.payload.size >= 4) {
+                    val support = RingFeatureSupport.fromOudmonSetTimePayload(parsed.payload)
+                    _featureSupport.value = support
+                    AroDbg.d(
+                        "oudmon capabilities: temp=${support.temperature} spo2=${support.spo2} bp=${support.bloodPressure}",
+                    )
+                }
+            }
+
             Opcodes.REAL_TIME_HEART_RATE ->
                 _realTimeHeartRate.value = parsed.payload.getOrNull(0)?.toInt()?.and(0xFF) ?: 0
 

@@ -110,6 +110,9 @@ class HomeViewModel @Inject constructor(
     val activeProtocol: StateFlow<com.kschulz.aro.data.ble.RingProtocol> =
         command.activeProtocolFlow
 
+    val featureSupport: StateFlow<com.kschulz.aro.data.ble.RingFeatureSupport> =
+        command.featureSupport
+
     val latestSleep: StateFlow<SleepSession?> =
         health.observeLatestMainSleep()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -253,8 +256,11 @@ class HomeViewModel @Inject constructor(
                 _lastSync.value = "Ring not connected. Place ring nearby and try again."
                 return@launch
             }
-            if (command.activeProtocol != com.kschulz.aro.data.ble.RingProtocol.JRING) {
-                _lastSync.value = "Temperature sensor is supported on SMART_RING (JRing) devices."
+            if (!command.featureSupport.value.temperature ||
+                command.activeProtocol != com.kschulz.aro.data.ble.RingProtocol.JRING
+            ) {
+                val ringLabel = boundRing.value?.displayName?.ifBlank { "this ring" } ?: "this ring"
+                _lastSync.value = "Temperature measurement is unavailable for $ringLabel."
                 return@launch
             }
             _lastSync.value = "Measuring temperature..."
