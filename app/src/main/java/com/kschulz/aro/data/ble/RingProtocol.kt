@@ -52,10 +52,14 @@ data class RingFeatureSupport(
         fun fromOudmonSetTimePayload(payload: ByteArray): RingFeatureSupport {
             if (payload.size < 4) return defaultsFor(RingProtocol.OUDMON)
             val flags3 = payload[3].toInt() and 0xFF
+            val flags10 = if (payload.size >= 11) payload[10].toInt() and 0xFF else 0
+            val hasSpo2 = (flags3 and 0x02) != 0 || (flags10 and 0x40) != 0
             return RingFeatureSupport(
                 heartRate = true,
-                bloodPressure = (flags3 and 0x04) != 0,
-                spo2 = (flags3 and 0x02) != 0,
+                // Oudmon rings (e.g. R03) support 0x0D auto-BP and 0x69 live PPG BP even when
+                // SetTimeRsp bit (payload[3] & 0x04) for legacy 0x14 manual-BP history is 0.
+                bloodPressure = true,
+                spo2 = hasSpo2,
                 steps = true,
                 sleep = true,
                 stress = true,
