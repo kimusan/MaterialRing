@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -70,6 +71,11 @@ fun SettingsScreen(
 
     var editingProfile by remember { mutableStateOf<Profile?>(null) }
     var showProfileDialog by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
+
+    if (showAboutDialog) {
+        AboutDialog(onDismiss = { showAboutDialog = false })
+    }
 
     if (showProfileDialog) {
         ProfileEditorDialog(
@@ -386,11 +392,38 @@ fun SettingsScreen(
 
         item {
             Text("About", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "Aro is a local-first companion app. All health data stays on this device " +
-                    "in a private database. There is no cloud backend and no analytics.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { showAboutDialog = true },
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                ) {
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("About Aro", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Version info, author, GitHub & schulz.dk",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = { showAboutDialog = true }) {
+                        Text("Open")
+                    }
+                }
+            }
         }
 
         item {
