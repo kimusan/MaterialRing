@@ -12,4 +12,5 @@ data class TemperatureSample(
     val epochMs: Long,
     val surfaceCelsius: Double,
     val bodyCelsius: Double,
+    val ringMac: String = "",
 )

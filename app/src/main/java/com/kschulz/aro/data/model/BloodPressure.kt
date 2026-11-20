@@ -11,4 +11,5 @@ data class BloodPressure(
     val sbp: Int,
     val dbp: Int,
     val source: BpSource,
+    val ringMac: String = "",
 )

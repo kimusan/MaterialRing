@@ -17,4 +17,5 @@ data class SleepSession(
     val startEpoch: Long,
     val endEpoch: Long,
     val isNap: Boolean = false,
+    val ringMac: String = "",
 )

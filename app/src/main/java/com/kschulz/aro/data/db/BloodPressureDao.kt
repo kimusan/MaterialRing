@@ -15,9 +15,9 @@ interface BloodPressureDao {
 
     @Query(
         "SELECT * FROM blood_pressure WHERE profileId = :profileId " +
-            "AND epochMs BETWEEN :from AND :to ORDER BY epochMs DESC",
+            "AND epochMs BETWEEN :from AND :to AND (:ringMac IS NULL OR ringMac = :ringMac) ORDER BY epochMs DESC",
     )
-    fun observeBetween(profileId: Long, from: Long, to: Long): Flow<List<BloodPressure>>
+    fun observeBetween(profileId: Long, from: Long, to: Long, ringMac: String? = null): Flow<List<BloodPressure>>
 
     @Query("SELECT * FROM blood_pressure WHERE profileId = :profileId ORDER BY epochMs DESC LIMIT 1")
     fun observeLatest(profileId: Long): Flow<BloodPressure?>

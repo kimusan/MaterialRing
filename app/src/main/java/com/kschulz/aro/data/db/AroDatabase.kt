@@ -33,7 +33,7 @@ import com.kschulz.aro.data.model.TemperatureSample
         TemperatureSample::class,
         StressSample::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 @TypeConverters(BpSourceConverter::class)
@@ -110,6 +110,37 @@ abstract class AroDatabase : RoomDatabase() {
                         "`score` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`profileId`, `epochMs`))",
                 )
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Recreate step_days with ringMac in the composite primary key so multiple
+                // rings worn on the same day are preserved individually and can be summed.
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `step_days_new` (" +
+                        "`profileId` INTEGER NOT NULL, " +
+                        "`date` INTEGER NOT NULL, " +
+                        "`steps` INTEGER NOT NULL, " +
+                        "`distanceMeters` INTEGER NOT NULL, " +
+                        "`calories` INTEGER NOT NULL, " +
+                        "`durationMin` INTEGER NOT NULL, " +
+                        "`ringMac` TEXT NOT NULL DEFAULT '', " +
+                        "PRIMARY KEY(`profileId`, `date`, `ringMac`))",
+                )
+                db.execSQL(
+                    "INSERT INTO `step_days_new` (`profileId`, `date`, `steps`, `distanceMeters`, `calories`, `durationMin`, `ringMac`) " +
+                        "SELECT `profileId`, `date`, `steps`, `distanceMeters`, `calories`, `durationMin`, '' FROM `step_days`",
+                )
+                db.execSQL("DROP TABLE `step_days`")
+                db.execSQL("ALTER TABLE `step_days_new` RENAME TO `step_days`")
+
+                db.execSQL("ALTER TABLE `sleep_sessions` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `heart_rate_samples` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `blood_pressure` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `spo2_samples` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `temperature_samples` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `stress_samples` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
             }
         }
     }

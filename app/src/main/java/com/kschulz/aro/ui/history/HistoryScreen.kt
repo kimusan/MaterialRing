@@ -12,12 +12,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -27,6 +33,9 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -35,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kschulz.aro.data.model.Profile
+import com.kschulz.aro.data.model.Ring
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -63,6 +73,8 @@ fun HistoryScreen(
 ) {
     val period by viewModel.period.collectAsStateWithLifecycle()
     val anchorDay by viewModel.anchorEpochDay.collectAsStateWithLifecycle()
+    val rings by viewModel.rings.collectAsStateWithLifecycle()
+    val selectedRingMac by viewModel.selectedRingMac.collectAsStateWithLifecycle()
     val steps by viewModel.steps.collectAsStateWithLifecycle()
     val weekStripSteps by viewModel.weekStripSteps.collectAsStateWithLifecycle()
     val sleep by viewModel.sleep.collectAsStateWithLifecycle()
@@ -116,6 +128,11 @@ fun HistoryScreen(
         ) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    RingFilterDropdown(
+                        rings = rings,
+                        selectedRingMac = selectedRingMac,
+                        onSelectRing = viewModel::selectRing,
+                    )
                     PeriodPicker(
                         selected = period,
                         onSelect = viewModel::setPeriod,
@@ -208,6 +225,100 @@ fun HistoryScreen(
             state = pullRefreshState,
             modifier = Modifier.align(Alignment.TopCenter),
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RingFilterDropdown(
+    rings: List<Ring>,
+    selectedRingMac: String?,
+    onSelectRing: (String?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedRing = rings.firstOrNull { it.macAddress == selectedRingMac }
+    val displayLabel = when {
+        selectedRingMac == null -> "All rings (Combined)"
+        selectedRing != null -> selectedRing.displayName
+        else -> selectedRingMac
+    }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = displayLabel,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text("Ring source") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+            modifier = Modifier
+                .menuAnchor()
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text(
+                            text = "All rings (Combined)",
+                            fontWeight = if (selectedRingMac == null) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                        Text(
+                            text = "Combined totals across all rings",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                trailingIcon = if (selectedRingMac == null) {
+                    { Icon(Icons.Default.Check, contentDescription = "Selected") }
+                } else {
+                    null
+                },
+                onClick = {
+                    onSelectRing(null)
+                    expanded = false
+                },
+            )
+            if (rings.isNotEmpty()) {
+                HorizontalDivider()
+                rings.forEach { ring ->
+                    val isSelected = selectedRingMac == ring.macAddress
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(
+                                    text = if (ring.isActive) "${ring.displayName} (Active)" else ring.displayName,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                                Text(
+                                    text = ring.macAddress,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        trailingIcon = if (isSelected) {
+                            { Icon(Icons.Default.Check, contentDescription = "Selected") }
+                        } else {
+                            null
+                        },
+                        onClick = {
+                            onSelectRing(ring.macAddress)
+                            expanded = false
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 

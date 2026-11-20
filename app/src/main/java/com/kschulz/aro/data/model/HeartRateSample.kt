@@ -8,4 +8,5 @@ data class HeartRateSample(
     val profileId: Long,
     val epochMs: Long,
     val bpm: Int,
+    val ringMac: String = "",
 )

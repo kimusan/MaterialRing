@@ -12,8 +12,11 @@ interface TemperatureDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(samples: List<TemperatureSample>)
 
-    @Query("SELECT * FROM temperature_samples WHERE profileId = :profileId AND epochMs BETWEEN :from AND :to ORDER BY epochMs ASC")
-    fun observeBetween(profileId: Long, from: Long, to: Long): Flow<List<TemperatureSample>>
+    @Query(
+        "SELECT * FROM temperature_samples WHERE profileId = :profileId AND epochMs BETWEEN :from AND :to " +
+            "AND (:ringMac IS NULL OR ringMac = :ringMac) ORDER BY epochMs ASC",
+    )
+    fun observeBetween(profileId: Long, from: Long, to: Long, ringMac: String? = null): Flow<List<TemperatureSample>>
 
     @Query("SELECT * FROM temperature_samples WHERE profileId = :profileId ORDER BY epochMs DESC LIMIT 1")
     fun observeLatest(profileId: Long): Flow<TemperatureSample?>

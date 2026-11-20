@@ -22,8 +22,11 @@ interface SleepDao {
     @Insert
     suspend fun insertSegments(segments: List<SleepSegment>)
 
-    @Query("SELECT * FROM sleep_sessions WHERE profileId = :profileId AND startEpoch BETWEEN :from AND :to ORDER BY startEpoch DESC")
-    fun observeSessions(profileId: Long, from: Long, to: Long): Flow<List<SleepSession>>
+    @Query(
+        "SELECT * FROM sleep_sessions WHERE profileId = :profileId AND startEpoch BETWEEN :from AND :to " +
+            "AND (:ringMac IS NULL OR ringMac = :ringMac) ORDER BY startEpoch DESC",
+    )
+    fun observeSessions(profileId: Long, from: Long, to: Long, ringMac: String? = null): Flow<List<SleepSession>>
 
     @Query("SELECT * FROM sleep_segments WHERE sessionId = :sessionId ORDER BY id ASC")
     fun segments(sessionId: Long): Flow<List<SleepSegment>>
@@ -32,9 +35,10 @@ interface SleepDao {
         "SELECT seg.* FROM sleep_segments seg " +
             "INNER JOIN sleep_sessions sess ON seg.sessionId = sess.id " +
             "WHERE sess.profileId = :profileId AND sess.startEpoch BETWEEN :from AND :to " +
+            "AND (:ringMac IS NULL OR sess.ringMac = :ringMac) " +
             "ORDER BY seg.id ASC",
     )
-    fun observeSegmentsForWindow(profileId: Long, from: Long, to: Long): Flow<List<SleepSegment>>
+    fun observeSegmentsForWindow(profileId: Long, from: Long, to: Long, ringMac: String? = null): Flow<List<SleepSegment>>
 
     @Query("SELECT * FROM sleep_sessions WHERE profileId = :profileId AND isNap = 0 ORDER BY startEpoch DESC LIMIT 1")
     fun observeLatestMain(profileId: Long): Flow<SleepSession?>

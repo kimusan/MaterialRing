@@ -22,6 +22,7 @@ object DatabaseModule {
                 AroDatabase.MIGRATION_2_3,
                 AroDatabase.MIGRATION_3_4,
                 AroDatabase.MIGRATION_4_5,
+                AroDatabase.MIGRATION_5_6,
             )
             .fallbackToDestructiveMigration()
             .build()

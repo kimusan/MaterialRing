@@ -2,9 +2,10 @@ package com.kschulz.aro.data.model
 
 import androidx.room.Entity
 
-/** One day of step activity. Composite PK (profileId, date) makes sync idempotent:
- *  re-pulling the same day replaces in place. [date] is a UTC epoch day. */
-@Entity(tableName = "step_days", primaryKeys = ["profileId", "date"])
+/** One day of step activity per ring. Composite PK (profileId, date, ringMac) makes sync
+ *  idempotent and lets multiple rings worn on the same day be viewed individually or summed.
+ *  [date] is a UTC epoch day. */
+@Entity(tableName = "step_days", primaryKeys = ["profileId", "date", "ringMac"])
 data class StepDay(
     val profileId: Long,
     val date: Long,
@@ -12,4 +13,5 @@ data class StepDay(
     val distanceMeters: Int,
     val calories: Int,
     val durationMin: Int,
+    val ringMac: String = "",
 )

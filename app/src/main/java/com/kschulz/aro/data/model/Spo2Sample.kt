@@ -13,4 +13,5 @@ data class Spo2Sample(
     val percent: Int,
     val minPercent: Int = percent,
     val maxPercent: Int = percent,
+    val ringMac: String = "",
 )

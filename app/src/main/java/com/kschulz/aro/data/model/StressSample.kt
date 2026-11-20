@@ -11,4 +11,5 @@ data class StressSample(
     val profileId: Long,
     val epochMs: Long,
     val score: Int,
+    val ringMac: String = "",
 )
