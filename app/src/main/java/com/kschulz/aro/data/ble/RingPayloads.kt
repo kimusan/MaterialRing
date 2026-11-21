@@ -733,7 +733,7 @@ object RingPayloads {
      * [type] is [MEASURE_TYPE_HEART_RATE] (`0x01`) or [MEASURE_TYPE_BLOOD_PRESSURE] (`0x02`).
      */
     fun buildStartMeasurementPayload(type: Int): ByteArray =
-        byteArrayOf(type.toByte(), 0x00)
+        byteArrayOf(type.toByte(), if (type >= 3) 0x25 else 0x00)
 
     /**
      * 0x6A STOP_HEART_RATE request payload (`StopHeartRateReq` in smali).

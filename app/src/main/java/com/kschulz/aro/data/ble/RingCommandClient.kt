@@ -33,6 +33,10 @@ class RingCommandClient @Inject constructor(
     private val _realTimeHeartRate = MutableStateFlow(0)
     val realTimeHeartRate: StateFlow<Int> = _realTimeHeartRate.asStateFlow()
 
+    fun clearRealTimeHeartRate() {
+        _realTimeHeartRate.value = 0
+    }
+
     private val _batteryLevel = MutableStateFlow(-1)
     val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 

@@ -41,6 +41,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 data class LiveMeasurementState(
     val active: Boolean = false,
+    val signalLocked: Boolean = false,
     val type: Int = RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE,
     val secondsRemaining: Int = 0,
     val livePulse: Int = 0,
@@ -297,10 +298,21 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    @Volatile
+    private var finishEarlyRequested = false
+
+    fun finishMeasurementEarly() {
+        if (_measurement.value.active) {
+            finishEarlyRequested = true
+        }
+    }
+
     fun stopMeasurement() {
         val current = _measurement.value
+        finishEarlyRequested = false
         measurementJob?.cancel()
         measurementJob = null
+        command.clearRealTimeHeartRate()
         if (current.active) {
             viewModelScope.launch {
                 sendStopLiveMeasurement(current.type, 0, 0)
@@ -326,6 +338,8 @@ class HomeViewModel @Inject constructor(
     }
 
     private fun startLiveMeasurement(type: Int) {
+        finishEarlyRequested = false
+        command.clearRealTimeHeartRate()
         measurementJob?.cancel()
         measurementJob = viewModelScope.launch {
             val profileId = settings.observeActiveProfileId().first()
@@ -382,14 +396,17 @@ class HomeViewModel @Inject constructor(
                     }
                     if (type == RingPayloads.MEASURE_TYPE_SPO2) {
                         val spo2 = if (pkt.value in 50..100) pkt.value else _measurement.value.liveSpo2
+                        val locked = spo2 in 50..100 || _measurement.value.signalLocked
                         val samples = if (pkt.value in 50..100) {
                             (_measurement.value.liveSamples + pkt.value).takeLast(30)
                         } else {
                             _measurement.value.liveSamples
                         }
                         _measurement.value = _measurement.value.copy(
+                            signalLocked = locked,
                             liveSpo2 = spo2,
                             liveSamples = samples,
+                            statusMessage = if (locked) "Live SpO2 signal locked — streaming..." else _measurement.value.statusMessage,
                         )
                         return@collect
                     }
@@ -414,16 +431,27 @@ class HomeViewModel @Inject constructor(
                         pulse > 0 -> pulse
                         else -> 0
                     }
+                    val locked = sampleVal > 0 || _measurement.value.signalLocked
                     val samples = if (sampleVal > 0) {
                         (_measurement.value.liveSamples + sampleVal).takeLast(30)
                     } else {
                         _measurement.value.liveSamples
                     }
                     _measurement.value = _measurement.value.copy(
+                        signalLocked = locked,
                         livePulse = pulse,
                         liveSbp = sbp,
                         liveDbp = dbp,
                         liveSamples = samples,
+                        statusMessage = if (locked) {
+                            if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
+                                "Live PPG locked — streaming blood pressure..."
+                            } else {
+                                "Live PPG locked — streaming heart rate..."
+                            }
+                        } else {
+                            _measurement.value.statusMessage
+                        },
                     )
                 }
             }
@@ -445,44 +473,30 @@ class HomeViewModel @Inject constructor(
             }
 
             try {
-                for (sec in MEASURE_DURATION_SECONDS downTo 1) {
-                    if (streamAbortError || !command.isConnected) break
-                    val liveHrNow = liveHeartRate.value
-                    val curr = _measurement.value
-                    val updatedPulse = if (liveHrNow > 0) liveHrNow else curr.livePulse
-                    var updatedSbp = curr.liveSbp
-                    var updatedDbp = curr.liveDbp
-                    if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE && updatedPulse > 0) {
-                        if (updatedSbp == 0 || (liveHrNow > 0 && liveHrNow != curr.livePulse)) {
-                            val (estSbp, estDbp) = RingPayloads.estimateBpFromPpgRaw(
-                                rawValue = updatedPulse,
-                                age = age,
-                                sbpBaseline = sbpBase,
-                                dbpBaseline = dbpBase,
-                            )
-                            updatedSbp = estSbp
-                            updatedDbp = estDbp
-                        }
-                    }
-                    val tickSample = when {
-                        type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE && updatedSbp > 0 -> updatedSbp
-                        type == RingPayloads.MEASURE_TYPE_SPO2 && curr.liveSpo2 > 0 -> curr.liveSpo2
-                        type == RingPayloads.MEASURE_TYPE_HEART_RATE && updatedPulse > 0 -> updatedPulse
-                        else -> 0
-                    }
-                    val updatedSamples = if (tickSample > 0 && curr.liveSamples.size < (MEASURE_DURATION_SECONDS - sec + 1)) {
-                        (curr.liveSamples + tickSample).takeLast(30)
-                    } else {
-                        curr.liveSamples
-                    }
-                    _measurement.value = curr.copy(
-                        secondsRemaining = sec,
-                        livePulse = updatedPulse,
-                        liveSbp = updatedSbp,
-                        liveDbp = updatedDbp,
-                        liveSamples = updatedSamples,
+                // Phase 1: Wait up to 30s for the optical PPG sensor to warm up and lock onto a real reading.
+                var warmupElapsed = 0
+                while (warmupElapsed < MEASURE_DURATION_SECONDS) {
+                    if (streamAbortError || finishEarlyRequested || !command.isConnected) break
+                    if (_measurement.value.signalLocked) break
+                    _measurement.value = _measurement.value.copy(
+                        secondsRemaining = MEASURE_DURATION_SECONDS - warmupElapsed,
                     )
-                    delay(1_000L)
+                    delay(500L)
+                    if (_measurement.value.signalLocked || streamAbortError || finishEarlyRequested) break
+                    delay(500L)
+                    warmupElapsed++
+                }
+
+                // Phase 2: Once locked, stream live readings for 15 full seconds (or until user taps Save & Stop).
+                if (_measurement.value.signalLocked && !streamAbortError && !finishEarlyRequested && command.isConnected) {
+                    val liveStreamSeconds = 15
+                    for (sec in liveStreamSeconds downTo 1) {
+                        if (streamAbortError || finishEarlyRequested || !command.isConnected) break
+                        _measurement.value = _measurement.value.copy(secondsRemaining = sec)
+                        delay(500L)
+                        if (streamAbortError || finishEarlyRequested || !command.isConnected) break
+                        delay(500L)
+                    }
                 }
 
                 if (streamAbortError) {
@@ -571,6 +585,7 @@ class HomeViewModel @Inject constructor(
                 }
             } finally {
                 collectJob.cancel()
+                command.clearRealTimeHeartRate()
             }
         }
     }

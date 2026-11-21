@@ -291,6 +291,7 @@ fun HomeScreen(
             if (measurement.active || measurement.statusMessage != null) {
                 LiveMeasurementCard(
                     state = measurement,
+                    onFinishEarly = { viewModel.finishMeasurementEarly() },
                     onStop = { viewModel.stopMeasurement() },
                     onRetry = {
                         if (measurement.type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
@@ -590,6 +591,7 @@ fun HomeScreen(
 @Composable
 private fun LiveMeasurementCard(
     state: LiveMeasurementState,
+    onFinishEarly: () -> Unit,
     onStop: () -> Unit,
     onRetry: () -> Unit,
 ) {
@@ -642,11 +644,15 @@ private fun LiveMeasurementCard(
                             isBp -> "Blood Pressure"
                             isSpo2 -> "Blood Oxygen (SpO2)"
                             else -> "Heart Rate"
-                        } + if (state.active) " • LIVE" else "",
+                        } + when {
+                            state.active && state.signalLocked -> " • LIVE"
+                            state.active -> " • Acquiring"
+                            else -> ""
+                        },
                         style = MaterialTheme.typography.titleMedium,
                     )
                 }
-                if (state.active) {
+                if (state.active && state.signalLocked) {
                     Text(
                         text = "${state.secondsRemaining}s",
                         style = MaterialTheme.typography.titleMedium,
@@ -656,10 +662,14 @@ private fun LiveMeasurementCard(
             }
 
             if (state.active) {
-                LinearProgressIndicator(
-                    progress = { (30 - state.secondsRemaining).coerceIn(0, 30) / 30f },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (state.signalLocked) {
+                    LinearProgressIndicator(
+                        progress = { (15 - state.secondsRemaining).coerceIn(0, 15) / 15f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
             }
 
             val liveReadout = when {
@@ -736,6 +746,11 @@ private fun LiveMeasurementCard(
                 horizontalArrangement = Arrangement.End,
             ) {
                 if (state.active) {
+                    if (state.signalLocked) {
+                        TextButton(onClick = onFinishEarly) {
+                            Text("Save & Stop")
+                        }
+                    }
                     TextButton(onClick = onStop) {
                         Text("Cancel")
                     }
