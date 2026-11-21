@@ -16,6 +16,12 @@ interface SleepDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSession(session: SleepSession): Long
 
+    @Query(
+        "DELETE FROM sleep_sessions WHERE profileId = :profileId AND isNap = :isNap " +
+            "AND startEpoch < :endEpoch AND endEpoch > :startEpoch",
+    )
+    suspend fun deleteOverlappingSessions(profileId: Long, isNap: Boolean, startEpoch: Long, endEpoch: Long)
+
     @Query("DELETE FROM sleep_segments WHERE sessionId = :sessionId")
     suspend fun deleteSegments(sessionId: Long)
 

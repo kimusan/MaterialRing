@@ -93,12 +93,12 @@ class SyncEngine @Inject constructor(
             steps += pullStepsForDay(profileId, epochDay, daysAgo).size
             hrSamples += pullHeartRate(profileId, epochDay, daysAgo, time).size
             if (!caps.newSleepProtocol) {
-                sleepSessions += pullSleep(profileId, epochDay, daysAgo).size
+                sleepSessions += pullSleep(profileId, epochDay, daysAgo, time).size
             }
         }
 
         if (caps.newSleepProtocol) {
-            sleepSessions += pullNewSleepProtocol(profileId, today).size
+            sleepSessions += pullNewSleepProtocol(profileId, today, time).size
         }
 
         // Blood pressure queries (0x0D auto-BP and 0x14 manual-BP) return buffered readings
@@ -109,7 +109,7 @@ class SyncEngine @Inject constructor(
         }
 
         // Blood oxygen (0xBC 0x2A auto-SpO2 big data across days).
-        val spo2Samples = pullAutoSpo2(profileId, today).size
+        val spo2Samples = pullAutoSpo2(profileId, today, time).size
 
         // Body battery is derived from what we just stored; recompute up to the current hour.
         val windowStartHour = time.epochDayForOffset(days.maxOfOrNull { it } ?: 0) * 24
@@ -160,7 +160,7 @@ class SyncEngine @Inject constructor(
     /** Fast incremental refresh for auto-SpO2 (`0xBC 0x2A`), triggered on `0x73` dataType `0x03`. */
     suspend fun syncAutoSpo2(profileId: Long, time: TimeSource): Int {
         if (!command.isConnected) return 0
-        return pullAutoSpo2(profileId, time.todayEpochDay()).size
+        return pullAutoSpo2(profileId, time.todayEpochDay(), time).size
     }
 
     /**
@@ -484,8 +484,8 @@ class SyncEngine @Inject constructor(
             packets = packets.map { it.payload },
             dayStartEpochMsForDate = { y, m, d ->
                 runCatching {
-                    java.time.LocalDate.of(y, m, d).toEpochDay() * 86_400_000L
-                }.getOrDefault(time.todayEpochDay() * 86_400_000L)
+                    time.dayStartEpochMs(java.time.LocalDate.of(y, m, d).toEpochDay())
+                }.getOrDefault(time.dayStartEpochMs(time.todayEpochDay()))
             },
             age = profile?.age(currentYear) ?: 30,
             sbpBaseline = profile?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE,
@@ -559,7 +559,7 @@ class SyncEngine @Inject constructor(
             frames.filter { !it.error }.map { it.payload }
         }
         if (packets.isEmpty()) return emptyList()
-        val dayStartMs = epochDay * 86_400_000L
+        val dayStartMs = time.dayStartEpochMs(epochDay)
         val samples = RingPayloads.parseHeartRateStream(packets, dayStartMs)
             .map { HeartRateSample(profileId, it.epochMs, it.bpm) }
         if (samples.isNotEmpty()) {
@@ -597,12 +597,17 @@ class SyncEngine @Inject constructor(
     private suspend fun pullNewSleepProtocol(
         profileId: Long,
         todayEpochDay: Long,
+        time: TimeSource,
     ): List<SleepSession> {
         // `LargeDataHandler.syncSleepList(dayOffset = -1)` (`0x27`, payload `[0xFF, 0x01]`).
         val req = byteArrayOf(0xFF.toByte(), 0x01)
         val rsp = command.request(Opcodes.NEW_SLEEP_PROTOCOL, req, STREAM_TIMEOUT_MS) ?: return emptyList()
         if (rsp.error) return emptyList()
-        val parsedList = RingPayloads.parseNewSleepProtocolPayload(rsp.payload, todayEpochDay)
+        val parsedList = RingPayloads.parseNewSleepProtocolPayload(
+            payload = rsp.payload,
+            todayEpochDay = todayEpochDay,
+            dayStartEpochMsForDay = time::dayStartEpochMs,
+        )
         val sessions = mutableListOf<SleepSession>()
         for (parsed in parsedList) {
             val session = SleepSession(
@@ -624,6 +629,7 @@ class SyncEngine @Inject constructor(
         profileId: Long,
         epochDay: Long,
         daysAgo: Int,
+        time: TimeSource,
     ): List<SleepSession> {
         // Request mirrors the vendor `ReadSleepDetailsReq(daysAgo, 0, 0x5F)`:
         // `[dayOffset, 0x0F, startIdx=0, endIdx=0x5F]`.
@@ -650,8 +656,8 @@ class SyncEngine @Inject constructor(
             packets = packets,
             dayStartEpochMsForDate = { y, m, d ->
                 runCatching {
-                    java.time.LocalDate.of(y, m, d).toEpochDay() * 86_400_000L
-                }.getOrDefault(epochDay * 86_400_000L)
+                    time.dayStartEpochMs(java.time.LocalDate.of(y, m, d).toEpochDay())
+                }.getOrDefault(time.dayStartEpochMs(epochDay))
             },
             fallbackEpochDay = epochDay,
         ) ?: return emptyList()
@@ -671,6 +677,7 @@ class SyncEngine @Inject constructor(
     private suspend fun pullAutoSpo2(
         profileId: Long,
         todayEpochDay: Long,
+        time: TimeSource,
     ): List<com.kschulz.aro.data.model.Spo2Sample> {
         // Matches LargeDataHandler.syncBloodOxygen(0): 0xBC 0x2A with 1-byte payload [0x00].
         val rsp = command.request(
@@ -679,7 +686,12 @@ class SyncEngine @Inject constructor(
             timeoutMs = STREAM_TIMEOUT_MS,
         ) ?: return emptyList()
         if (rsp.error) return emptyList()
-        val samples = RingPayloads.parseAutoSpo2BigData(profileId, todayEpochDay, rsp.payload)
+        val samples = RingPayloads.parseAutoSpo2BigData(
+            profileId = profileId,
+            todayEpochDay = todayEpochDay,
+            payload = rsp.payload,
+            dayStartEpochMsForDay = time::dayStartEpochMs,
+        )
         if (samples.isNotEmpty()) health.upsertSpo2(profileId, samples)
         return samples
     }

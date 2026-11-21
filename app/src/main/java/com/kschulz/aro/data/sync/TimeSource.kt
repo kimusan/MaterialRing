@@ -11,6 +11,12 @@ interface TimeSource {
      * vendor sends in LOCAL time (not UTC), so this must be the phone's default zone.
      */
     fun localClock(): LocalClock
+
+    /**
+     * Epoch milliseconds for midnight (00:00:00) of [epochDay] in the ring's wall-clock zone.
+     * Defaults to UTC midnight so deterministic unit tests using [FixedTimeSource] stay stable.
+     */
+    fun dayStartEpochMs(epochDay: Long): Long = epochDay * 86_400_000L
 }
 
 /** Local wall-clock fields, for building the 0x01 time payload. */

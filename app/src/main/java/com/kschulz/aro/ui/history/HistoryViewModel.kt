@@ -161,48 +161,48 @@ class HistoryViewModel @Inject constructor(
 
     val sleep: StateFlow<List<SleepSession>> = queryFlow
         .flatMapLatest { q ->
-            // Include the prior evening (6h before midnight) so nights crossing midnight are captured.
-            val startMs = q.fromDay * 86_400_000L - 6 * 3_600_000L
-            val endMs = (q.toDay + 1) * 86_400_000L
+            // Include the prior evening (6h before local midnight) so nights crossing midnight are captured.
+            val startMs = time.dayStartEpochMs(q.fromDay) - 6 * 3_600_000L
+            val endMs = time.dayStartEpochMs(q.toDay + 1)
             health.observeSleepSessions(startMs, endMs, q.ringMac)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val sleepSegments: StateFlow<List<SleepSegment>> = queryFlow
         .flatMapLatest { q ->
-            val startMs = q.fromDay * 86_400_000L - 6 * 3_600_000L
-            val endMs = (q.toDay + 1) * 86_400_000L
+            val startMs = time.dayStartEpochMs(q.fromDay) - 6 * 3_600_000L
+            val endMs = time.dayStartEpochMs(q.toDay + 1)
             health.observeSleepSegmentsBetween(startMs, endMs, q.ringMac)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val heartRate: StateFlow<List<HeartRateSample>> = queryFlow
         .flatMapLatest { q ->
-            health.observeHeartRateBetween(q.fromDay * 86_400_000L, (q.toDay + 1) * 86_400_000L, q.ringMac)
+            health.observeHeartRateBetween(time.dayStartEpochMs(q.fromDay), time.dayStartEpochMs(q.toDay + 1) - 1L, q.ringMac)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val bloodPressure: StateFlow<List<BloodPressure>> = queryFlow
         .flatMapLatest { q ->
-            health.observeBloodPressureBetween(q.fromDay * 86_400_000L, (q.toDay + 1) * 86_400_000L, q.ringMac)
+            health.observeBloodPressureBetween(time.dayStartEpochMs(q.fromDay), time.dayStartEpochMs(q.toDay + 1) - 1L, q.ringMac)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val spo2: StateFlow<List<Spo2Sample>> = queryFlow
         .flatMapLatest { q ->
-            health.observeSpo2Between(q.fromDay * 86_400_000L, (q.toDay + 1) * 86_400_000L, q.ringMac)
+            health.observeSpo2Between(time.dayStartEpochMs(q.fromDay), time.dayStartEpochMs(q.toDay + 1) - 1L, q.ringMac)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val stress: StateFlow<List<StressSample>> = queryFlow
         .flatMapLatest { q ->
-            health.observeStressBetween(q.fromDay * 86_400_000L, (q.toDay + 1) * 86_400_000L, q.ringMac)
+            health.observeStressBetween(time.dayStartEpochMs(q.fromDay), time.dayStartEpochMs(q.toDay + 1) - 1L, q.ringMac)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val temperature: StateFlow<List<TemperatureSample>> = queryFlow
         .flatMapLatest { q ->
-            health.observeTemperatureBetween(q.fromDay * 86_400_000L, (q.toDay + 1) * 86_400_000L, q.ringMac)
+            health.observeTemperatureBetween(time.dayStartEpochMs(q.fromDay), time.dayStartEpochMs(q.toDay + 1) - 1L, q.ringMac)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 

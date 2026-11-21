@@ -65,4 +65,34 @@ class RingPayloadsSleepTest {
         assertTrue(p.stages.isEmpty())
         assertEquals(p.endEpochMs, p.startEpochMs)
     }
+
+    @Test
+    fun `new sleep protocol converts endMinutes relative to local midnight`() {
+        // 1 day record, daysAgo=0, bodyLen=6 (2B reserved + 2B endMin + 1 stage pair):
+        // endMinutes = 7*60 + 58 = 478 (0x01DE LE -> 0xDE, 0x01), 120 min deep sleep (rawType=2).
+        val payload = byteArrayOf(
+            0x01, // dayCount
+            0x00, // daysAgo = 0
+            0x06, // bodyLen = 6
+            0x00, 0x00, // reserved
+            0xDE.toByte(), 0x01, // endMinutes = 478 (07:58 local)
+            0x02, 120.toByte(), // Deep sleep, 120 min
+        )
+        val copenhagen = java.time.ZoneId.of("Europe/Copenhagen")
+        val localDate = java.time.LocalDate.of(2026, 11, 21)
+        val parsed = RingPayloads.parseNewSleepProtocolPayload(
+            payload = payload,
+            todayEpochDay = localDate.toEpochDay(),
+            dayStartEpochMsForDay = { epochDay ->
+                java.time.LocalDate.ofEpochDay(epochDay)
+                    .atStartOfDay(copenhagen)
+                    .toInstant()
+                    .toEpochMilli()
+            },
+        )
+        assertEquals(1, parsed.size)
+        val endLocal = java.time.Instant.ofEpochMilli(parsed.first().endEpochMs).atZone(copenhagen)
+        assertEquals(7, endLocal.hour)
+        assertEquals(58, endLocal.minute)
+    }
 }

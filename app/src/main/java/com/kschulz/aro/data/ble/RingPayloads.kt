@@ -206,6 +206,7 @@ object RingPayloads {
     fun parseNewSleepProtocolPayload(
         payload: ByteArray,
         todayEpochDay: Long,
+        dayStartEpochMsForDay: (Long) -> Long = { it * SECONDS_PER_DAY * 1000L },
     ): List<SleepParse> {
         if (payload.isEmpty()) return emptyList()
         val dayCount = payload[0].toInt() and 0xFF
@@ -244,12 +245,12 @@ object RingPayloads {
             }
             if (totalMin > 0 && stages.isNotEmpty()) {
                 val dayEpoch = todayEpochDay - daysAgo
-                val endEpochSec = dayEpoch * SECONDS_PER_DAY + endMinutes * 60L
-                val startEpochSec = endEpochSec - totalMin * 60L
+                val endEpochMs = dayStartEpochMsForDay(dayEpoch) + endMinutes * 60_000L
+                val startEpochMs = endEpochMs - totalMin * 60_000L
                 out.add(
                     SleepParse(
-                        startEpochMs = startEpochSec * 1000L,
-                        endEpochMs = endEpochSec * 1000L,
+                        startEpochMs = startEpochMs,
+                        endEpochMs = endEpochMs,
                         isNap = false,
                         stages = stages,
                     ),
@@ -924,6 +925,7 @@ object RingPayloads {
         profileId: Long,
         todayEpochDay: Long,
         payload: ByteArray,
+        dayStartEpochMsForDay: (Long) -> Long = { it * SECONDS_PER_DAY * 1000L },
     ): List<Spo2Sample> {
         val recordSize = 49
         val dayCount = payload.size / recordSize
@@ -933,7 +935,7 @@ object RingPayloads {
             val base = d * recordSize
             val daysAgo = payload[base].toInt() and 0xFF
             if (daysAgo > 30) continue
-            val dayStartMs = (todayEpochDay - daysAgo) * SECONDS_PER_DAY * 1000L
+            val dayStartMs = dayStartEpochMsForDay(todayEpochDay - daysAgo)
             for (hour in 0 until 24) {
                 val rawMin = payload[base + 1 + hour * 2].toInt() and 0xFF
                 val rawMax = payload[base + 2 + hour * 2].toInt() and 0xFF

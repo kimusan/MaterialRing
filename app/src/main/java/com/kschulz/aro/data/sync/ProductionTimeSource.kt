@@ -1,18 +1,25 @@
 package com.kschulz.aro.data.sync
 
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.Calendar
-import java.util.TimeZone
 
 class ProductionTimeSource(
-    private val timeZone: TimeZone = TimeZone.getTimeZone("UTC"),
+    private val zoneId: ZoneId = ZoneId.systemDefault(),
 ) : TimeSource {
 
     override fun nowMillis(): Long = System.currentTimeMillis()
 
     override fun todayEpochDay(): Long =
-        Calendar.getInstance(timeZone).timeInMillis / 86_400_000L
+        LocalDate.now(zoneId).toEpochDay()
 
     override fun epochDayForOffset(daysAgo: Int): Long = todayEpochDay() - daysAgo.toLong()
+
+    override fun dayStartEpochMs(epochDay: Long): Long =
+        LocalDate.ofEpochDay(epochDay)
+            .atStartOfDay(zoneId)
+            .toInstant()
+            .toEpochMilli()
 
     override fun localClock(): LocalClock = Calendar.getInstance().let { c ->
         LocalClock(

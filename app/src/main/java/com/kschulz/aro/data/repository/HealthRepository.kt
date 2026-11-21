@@ -92,6 +92,12 @@ class HealthRepository @Inject constructor(
 
     override suspend fun upsertSleep(profileId: Long, session: SleepSession, segments: List<SleepSegment>) {
         val mac = activeRingMac()
+        sleep.deleteOverlappingSessions(
+            profileId = profileId,
+            isNap = session.isNap,
+            startEpoch = session.startEpoch,
+            endEpoch = session.endEpoch,
+        )
         val id = sleep.upsertSession(
             session.copy(profileId = profileId, ringMac = session.ringMac.ifBlank { mac }),
         )
