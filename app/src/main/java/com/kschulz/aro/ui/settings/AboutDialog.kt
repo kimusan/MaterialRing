@@ -80,6 +80,21 @@ fun AboutDialog(
                     style = MaterialTheme.typography.bodyMedium,
                 )
 
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "What does \"Aro\" mean?",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "\"Aro\" means \"ring\" or \"hoop\" in Spanish, Portuguese, and Galician — " +
+                            "a simple, timeless word for a circular band.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
                 Surface(
                     color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
                     shape = RoundedCornerShape(12.dp),

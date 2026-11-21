@@ -1,9 +1,10 @@
 # Aro
 
-A clean-room, local-first Android companion app for smart rings. It talks to your
-ring directly over Bluetooth Low Energy, stores every health reading privately on
-the device in Room, and presents a modern Material 3 (Material You) UI with
-interactive charts and home screen widgets.
+A clean-room, local-first Android companion app for smart rings. *"Aro"* means **"ring"**
+or **"hoop"** in Spanish, Portuguese, and Galician. Aro talks to your ring directly over
+Bluetooth Low Energy, stores every health reading privately on the device in Room, and
+presents a modern Material 3 (Material You) UI with interactive charts and home screen
+widgets.
 
 ## Why this exists
 
@@ -24,30 +25,33 @@ Aro automatically detects the ring's BLE protocol from its GATT services when co
 | **JRing / Dialog** | `SMART_RING` (tested on Dialog/Renesas DA1458x), `JRing` | `000056ff-...` (`000033f3` TX / `000033f4` RX) + standard Battery `0x180F` (`0x2A19`) | Fixed 20-byte frames (`[cmd, 19 payload bytes]`, no checksum) |
 
 Multiple rings can be bound simultaneously (**Settings → Add ring**), with one
-active ring connected at a time and one-tap switching between rings.
+active ring connected at a time, one-tap switching between rings, and per-ring
+hardware capability detection (unsupported metrics are clearly dimmed on the Home
+screen as unavailable for that ring).
 
 ## Features
 
 - **Activity & Steps**: Concentric daily activity rings (steps, calories, distance),
   step history sync (`0x48` + `0x43` fallback on Oudmon; `0x10`/`0x03` on JRing),
-  and live `0x73` push updates while connected.
-- **Heart Rate (bpm)**: Live sensor readout, on-demand measurement (`0x69`/`0x6A`
-  or JRing `0x23`/`0x24`), and periodic history sync (`0x15` / `0x16`).
-- **Blood Pressure (mmHg)**: On-demand live BP measurement (`0x69`/`0x6A` with
-  profile baseline calibration), auto-BP (`0x0D`) & manual-BP (`0x14`) sync, and
-  AHA/ESC category badges.
-- **Blood Oxygen (SpO2 %)**: On-demand live measurement (`0x69` type `0x03` / JRing
-  `0x23 0x02`) and automatic background SpO2 sync (`0x2C` + `0xBC 0x2A`).
+  multi-ring daily step summation when switching rings during the day, and live
+  `0x73` push updates while connected.
+- **Live Streaming Heart Rate, Blood Pressure & SpO2**: Two-phase on-demand
+  measurement (optical PPG acquisition followed by a 15-second live stream with
+  pulsing **LIVE** indicator, real-time sparkline, in-place Home card updates,
+  and early **Save & Stop**), plus periodic history sync (`0x15` / `0x16` HR,
+  `0x0D` / `0x14` BP, `0xBC 0x2A` SpO2).
 - **Sleep & Stages**: Full overnight hypnogram and stage breakdown (**Deep**,
-  **Light**, **REM**, **Awake**) via Oudmon's `0xBC 0x27` new sleep protocol and
-  `0x44` fallback.
+  **Light**, **REM**, **Awake**) anchored to local wall-clock midnight via
+  Oudmon's `0xBC 0x27` new sleep protocol and `0x44` fallback.
 - **Skin & Body Temperature (°C)**: Live dual-channel thermistor measurement
-  (`0x37`/`0x38`) on `SMART_RING` (JRing) devices.
+  (`0x37`/`0x38`) on rings equipped with a temperature sensor.
 - **Stress (1–100) & Body Battery (5–100)**: On-device derived wellness metrics
   for both ring families — hourly charging during sleep and draining with waking
   HR/activity load (clearly labeled as derived wellness metrics, not clinical vitals).
-- **Interactive History Charts**: Daily, Weekly, and Monthly plots for every metric
-  with touch scrubbing, date navigation, and tap-to-jump from any Home card.
+- **Interactive History Charts & Per-Ring Filter**: Daily, Weekly, and Monthly
+  plots for every metric with touch scrubbing, date navigation, tap-to-jump from
+  any Home card, and a top **Ring source** dropdown to view any individual ring
+  or **All rings (Combined)** (including on-the-fly per-ring Body Battery curves).
 - **Card Info Popups (`i`)**: Concise explanations on every Home card covering what
   each metric means, how it is calculated, and reference ranges by age group.
 - **Configurable Continuous Monitoring**: Choose automatic background measurement
@@ -65,8 +69,9 @@ active ring connected at a time and one-tap switching between rings.
 - **Google Health Connect (Opt-In)**: Write-only export with runtime permission
   prompts and idempotent `clientRecordId` deduplication for Steps, Distance,
   Calories, Heart Rate, Sleep (with stages), Blood Pressure, and SpO2.
-- **Pull-to-Sync & Top-Bar Controls**: Pull down on Home or History to sync, or use
-  the Sync / Reconnect actions in the top app bar.
+- **Pull-to-Sync, Top-Bar Controls & About Dialog**: Pull down on Home or History
+  to sync, use Sync / Reconnect in the top app bar, and view version, author, and
+  project links under **Settings → About Aro**.
 
 ## What it deliberately does not do
 
@@ -81,21 +86,22 @@ Single Gradle module with package-enforced boundaries:
 ```
 com.kschulz.aro/
   data/ble/            RingBleTransport (GATT), RingCommandClient, RingProtocol,
-                       RingProtocolCodec (Oudmon 16B + 0xBC), JRingProtocol (20B),
-                       GattUuids, Opcodes, Crc16, SumCheck, ByteOrder, RingPayloads,
-                       RingScanner
-  data/model/          Room v5 entities: Profile, Ring, StepDay, SleepSession,
-                       SleepSegment, HeartRateSample, BloodPressure, Spo2Sample,
-                       TemperatureSample, StressSample, BodyBatteryPoint, AppSetting
-  data/db/             AroDatabase (with MIGRATION_1_2 .. MIGRATION_4_5), DAOs
-  data/repository/     ProfileRepository, DeviceRepository, HealthRepository,
-                       SettingsRepository (all profile-scoped)
+                       RingFeatureSupport, RingProtocolCodec (Oudmon 16B + 0xBC),
+                       JRingProtocol (20B), GattUuids, Opcodes, Crc16, SumCheck,
+                       ByteOrder, RingPayloads, RingScanner
+  data/model/          Room v6 entities (with ringMac tagging): Profile, Ring,
+                       StepDay, SleepSession, SleepSegment, HeartRateSample,
+                       BloodPressure, Spo2Sample, TemperatureSample, StressSample,
+                       BodyBatteryPoint, AppSetting
+  data/db/             AroDatabase (with MIGRATION_1_2 .. MIGRATION_5_6), DAOs
+  data/repository/     ProfileRepository, DeviceRepository, HealthRepository
+                       (profile-scoped + per-ring/combined queries), SettingsRepository
   data/sync/           SyncEngine (Oudmon + JRing paths), SyncJob (WorkManager),
-                       DistributionBitmap, TimeSource
+                       DistributionBitmap, TimeSource (local-midnight anchoring)
   data/healthconnect/  HealthConnectExporter (androidx.health.connect:connect-client)
   domain/              BodyBatteryAlgorithm, BodyBatteryUseCase
   ui/                  Compose screens (Home, History + Charts, Scan, Settings,
-                       ProfileEditorDialog, MetricInfoDialog) + Material 3 theme
+                       ProfileEditorDialog, MetricInfoDialog, AboutDialog) + Material 3 theme
   widget/              4 AppWidgetProviders + WidgetChartRenderer + WidgetDataLoader
   di/                  Hilt modules
 ```
