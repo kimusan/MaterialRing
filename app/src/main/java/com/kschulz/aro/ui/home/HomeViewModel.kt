@@ -47,6 +47,7 @@ data class LiveMeasurementState(
     val liveSbp: Int = 0,
     val liveDbp: Int = 0,
     val liveSpo2: Int = 0,
+    val liveSamples: List<Int> = emptyList(),
     val statusMessage: String? = null,
     val wearingError: Boolean = false,
 )
@@ -347,11 +348,6 @@ class HomeViewModel @Inject constructor(
             val sbpBase = currentProfile?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE
             val dbpBase = currentProfile?.dbpBaseline ?: Profile.DEFAULT_DBP_BASELINE
 
-            // Push user calibration baseline to the ring before starting BP measurement.
-            if (currentProfile != null && type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
-                engine.syncProfileSettings(currentProfile, time, useMetric.value)
-            }
-
             _measurement.value = LiveMeasurementState(
                 active = true,
                 type = type,
@@ -365,6 +361,11 @@ class HomeViewModel @Inject constructor(
                         "Measuring heart rate... Keep your hand still."
                 },
             )
+
+            // Push user calibration baseline to the ring before starting BP measurement.
+            if (currentProfile != null && type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
+                engine.syncProfileSettings(currentProfile, time, useMetric.value)
+            }
 
             var streamAbortError = false
             val collectJob = launch {
@@ -381,7 +382,15 @@ class HomeViewModel @Inject constructor(
                     }
                     if (type == RingPayloads.MEASURE_TYPE_SPO2) {
                         val spo2 = if (pkt.value in 50..100) pkt.value else _measurement.value.liveSpo2
-                        _measurement.value = _measurement.value.copy(liveSpo2 = spo2)
+                        val samples = if (pkt.value in 50..100) {
+                            (_measurement.value.liveSamples + pkt.value).takeLast(30)
+                        } else {
+                            _measurement.value.liveSamples
+                        }
+                        _measurement.value = _measurement.value.copy(
+                            liveSpo2 = spo2,
+                            liveSamples = samples,
+                        )
                         return@collect
                     }
                     val pulse = if (pkt.value > 0) pkt.value else _measurement.value.livePulse
@@ -400,10 +409,21 @@ class HomeViewModel @Inject constructor(
                         sbp = estSbp
                         dbp = estDbp
                     }
+                    val sampleVal = when {
+                        type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE && sbp > 0 -> sbp
+                        pulse > 0 -> pulse
+                        else -> 0
+                    }
+                    val samples = if (sampleVal > 0) {
+                        (_measurement.value.liveSamples + sampleVal).takeLast(30)
+                    } else {
+                        _measurement.value.liveSamples
+                    }
                     _measurement.value = _measurement.value.copy(
                         livePulse = pulse,
                         liveSbp = sbp,
                         liveDbp = dbp,
+                        liveSamples = samples,
                     )
                 }
             }
@@ -429,28 +449,38 @@ class HomeViewModel @Inject constructor(
                     if (streamAbortError || !command.isConnected) break
                     val liveHrNow = liveHeartRate.value
                     val curr = _measurement.value
-                    val updatedPulse = if (curr.livePulse > 0) curr.livePulse else liveHrNow
+                    val updatedPulse = if (liveHrNow > 0) liveHrNow else curr.livePulse
                     var updatedSbp = curr.liveSbp
                     var updatedDbp = curr.liveDbp
-                    if (
-                        type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE &&
-                        updatedSbp == 0 &&
-                        updatedPulse > 0
-                    ) {
-                        val (estSbp, estDbp) = RingPayloads.estimateBpFromPpgRaw(
-                            rawValue = updatedPulse,
-                            age = age,
-                            sbpBaseline = sbpBase,
-                            dbpBaseline = dbpBase,
-                        )
-                        updatedSbp = estSbp
-                        updatedDbp = estDbp
+                    if (type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE && updatedPulse > 0) {
+                        if (updatedSbp == 0 || (liveHrNow > 0 && liveHrNow != curr.livePulse)) {
+                            val (estSbp, estDbp) = RingPayloads.estimateBpFromPpgRaw(
+                                rawValue = updatedPulse,
+                                age = age,
+                                sbpBaseline = sbpBase,
+                                dbpBaseline = dbpBase,
+                            )
+                            updatedSbp = estSbp
+                            updatedDbp = estDbp
+                        }
+                    }
+                    val tickSample = when {
+                        type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE && updatedSbp > 0 -> updatedSbp
+                        type == RingPayloads.MEASURE_TYPE_SPO2 && curr.liveSpo2 > 0 -> curr.liveSpo2
+                        type == RingPayloads.MEASURE_TYPE_HEART_RATE && updatedPulse > 0 -> updatedPulse
+                        else -> 0
+                    }
+                    val updatedSamples = if (tickSample > 0 && curr.liveSamples.size < (MEASURE_DURATION_SECONDS - sec + 1)) {
+                        (curr.liveSamples + tickSample).takeLast(30)
+                    } else {
+                        curr.liveSamples
                     }
                     _measurement.value = curr.copy(
                         secondsRemaining = sec,
                         livePulse = updatedPulse,
                         liveSbp = updatedSbp,
                         liveDbp = updatedDbp,
+                        liveSamples = updatedSamples,
                     )
                     delay(1_000L)
                 }

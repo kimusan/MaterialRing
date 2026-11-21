@@ -1,11 +1,18 @@
 package com.kschulz.aro.ui.home
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -356,19 +363,32 @@ fun HomeScreen(
             val unavailableForRing = "Unavailable for $activeRingName"
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                val measuringHr = measurement.active && measurement.type == RingPayloads.MEASURE_TYPE_HEART_RATE
+                val measuringBp = measurement.active && measurement.type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE
+                val hrPulseNow = when {
+                    measuringHr && measurement.livePulse > 0 -> measurement.livePulse
+                    liveHr > 0 -> liveHr
+                    else -> 0
+                }
                 val hrDisplay = when {
-                    liveHr > 0 -> "$liveHr bpm"
+                    hrPulseNow > 0 -> "$hrPulseNow bpm"
+                    measuringHr -> "Measuring..."
                     latestHr != null -> "${latestHr!!.bpm} bpm"
                     !featureSupport.heartRate -> "Unavailable"
                     else -> "No reading"
+                }
+                val hrSubtitle = when {
+                    measuringHr -> "Live • ${measurement.secondsRemaining}s left"
+                    liveHr > 0 -> "Live sensor"
+                    else -> latestHr?.let { "Last recorded" }
                 }
                 MetricTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Favorite,
                     title = "Heart rate",
                     value = hrDisplay,
-                    subtitle = if (liveHr > 0) "Live sensor" else latestHr?.let { "Last recorded" },
-                    live = liveHr > 0,
+                    subtitle = hrSubtitle,
+                    live = measuringHr || liveHr > 0,
                     available = featureSupport.heartRate,
                     unavailableNote = unavailableForRing,
                     actionLabel = if (measurement.active) null else "Measure",
@@ -376,16 +396,31 @@ fun HomeScreen(
                     onInfo = { infoTopic = MetricInfoTopic.HEART_RATE },
                     onClick = { onOpenHistory(com.kschulz.aro.ui.history.HistoryMetric.HEART_RATE) },
                 )
+
+                val bpDisplay = when {
+                    measuringBp && measurement.liveSbp > 0 && measurement.liveDbp > 0 ->
+                        "${measurement.liveSbp}/${measurement.liveDbp} mmHg"
+                    measuringBp -> "Measuring..."
+                    bp != null -> "${bp!!.sbp}/${bp!!.dbp} mmHg"
+                    !featureSupport.bloodPressure -> "Unavailable"
+                    else -> "None"
+                }
+                val bpSubtitle = when {
+                    measuringBp && measurement.livePulse > 0 ->
+                        "Live • ${measurement.livePulse} bpm • ${measurement.secondsRemaining}s"
+                    measuringBp -> "Live • ${measurement.secondsRemaining}s left"
+                    else -> bp?.let {
+                        val src = if (it.source == BpSource.MANUAL) "Manual" else "Auto"
+                        "$src • ${bpCategoryLabel(it.sbp, it.dbp)}"
+                    }
+                }
                 MetricTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Bloodtype,
                     title = "Blood pressure",
-                    value = bp?.let { "${it.sbp}/${it.dbp} mmHg" }
-                        ?: if (!featureSupport.bloodPressure) "Unavailable" else "None",
-                    subtitle = bp?.let {
-                        val src = if (it.source == BpSource.MANUAL) "Manual" else "Auto"
-                        "$src • ${bpCategoryLabel(it.sbp, it.dbp)}"
-                    },
+                    value = bpDisplay,
+                    subtitle = bpSubtitle,
+                    live = measuringBp,
                     available = featureSupport.bloodPressure,
                     unavailableNote = unavailableForRing,
                     actionLabel = if (measurement.active) null else "Measure",
@@ -395,19 +430,29 @@ fun HomeScreen(
                 )
             }
 
+            val measuringSpo2 = measurement.active && measurement.type == RingPayloads.MEASURE_TYPE_SPO2
             MetricTile(
                 modifier = Modifier.fillMaxWidth(),
                 icon = Icons.Filled.Bloodtype,
                 title = "Blood oxygen (SpO2)",
-                value = spo2?.let { "${it.percent}%" }
-                    ?: if (!featureSupport.spo2) "Unavailable" else "No reading",
-                subtitle = spo2?.let {
-                    when {
-                        it.percent >= 95 -> "Normal"
-                        it.percent >= 90 -> "Slightly low"
-                        else -> "Low"
-                    }
-                } ?: "Tap Measure to read SpO2 from ring",
+                value = when {
+                    measuringSpo2 && measurement.liveSpo2 > 0 -> "${measurement.liveSpo2}%"
+                    measuringSpo2 -> "Measuring..."
+                    spo2 != null -> "${spo2!!.percent}%"
+                    !featureSupport.spo2 -> "Unavailable"
+                    else -> "No reading"
+                },
+                subtitle = when {
+                    measuringSpo2 -> "Live • ${measurement.secondsRemaining}s left"
+                    else -> spo2?.let {
+                        when {
+                            it.percent >= 95 -> "Normal"
+                            it.percent >= 90 -> "Slightly low"
+                            else -> "Low"
+                        }
+                    } ?: "Tap Measure to read SpO2 from ring"
+                },
+                live = measuringSpo2,
                 available = featureSupport.spo2,
                 unavailableNote = unavailableForRing,
                 actionLabel = if (measurement.active) null else "Measure",
@@ -550,6 +595,17 @@ private fun LiveMeasurementCard(
 ) {
     val isBp = state.type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE
     val isSpo2 = state.type == RingPayloads.MEASURE_TYPE_SPO2
+    val pulseTransition = rememberInfiniteTransition(label = "liveDot")
+    val liveDotAlpha by pulseTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 650),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "liveDotAlpha",
+    )
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -569,14 +625,27 @@ private fun LiveMeasurementCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = when {
-                        isBp -> "Blood Pressure Measurement"
-                        isSpo2 -> "Blood Oxygen (SpO2) Measurement"
-                        else -> "Heart Rate Measurement"
-                    },
-                    style = MaterialTheme.typography.titleMedium,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (state.active) {
+                        Icon(
+                            imageVector = Icons.Filled.FiberManualRecord,
+                            contentDescription = "Live",
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = liveDotAlpha),
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
+                    Text(
+                        text = when {
+                            isBp -> "Blood Pressure"
+                            isSpo2 -> "Blood Oxygen (SpO2)"
+                            else -> "Heart Rate"
+                        } + if (state.active) " • LIVE" else "",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
                 if (state.active) {
                     Text(
                         text = "${state.secondsRemaining}s",
@@ -615,8 +684,44 @@ private fun LiveMeasurementCard(
             if (state.active || state.liveSbp > 0 || state.livePulse > 0 || state.liveSpo2 > 0) {
                 Text(
                     text = liveReadout,
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = MaterialTheme.typography.headlineMedium,
                 )
+            }
+
+            if (state.liveSamples.size >= 2) {
+                val strokeColor = MaterialTheme.colorScheme.primary
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                ) {
+                    val values = state.liveSamples
+                    val minV = (values.minOrNull() ?: 0) - 3
+                    val maxV = (values.maxOrNull() ?: 100) + 3
+                    val span = (maxV - minV).coerceAtLeast(1).toFloat()
+                    val stepX = size.width / (values.size - 1).coerceAtLeast(1)
+                    val path = androidx.compose.ui.graphics.Path()
+                    values.forEachIndexed { idx, v ->
+                        val x = idx * stepX
+                        val y = size.height - ((v - minV) / span) * size.height
+                        if (idx == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                    }
+                    drawPath(
+                        path = path,
+                        color = strokeColor,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = 2.5.dp.toPx(),
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        ),
+                    )
+                    val lastX = (values.size - 1) * stepX
+                    val lastY = size.height - ((values.last() - minV) / span) * size.height
+                    drawCircle(
+                        color = strokeColor,
+                        radius = 4.dp.toPx(),
+                        center = androidx.compose.ui.geometry.Offset(lastX, lastY),
+                    )
+                }
             }
 
             state.statusMessage?.let {
