@@ -46,9 +46,10 @@ screen as unavailable for that ring).
 - **Live Streaming Heart Rate, Blood Pressure & SpO2**: Two-phase on-demand
   measurement (optical PPG acquisition followed by a 15-second live stream with
   pulsing **LIVE** indicator, real-time sparkline, in-place Home card updates,
-  and early **Save & Stop**), standard BLE Heart Rate (`0x180D`/`0x2A37`) streaming
-  and Channel 10 on-demand HR/SpO2 on Samsung Galaxy Ring, plus periodic history sync
-  (`0x15` / `0x16` HR, `0x0D` / `0x14` BP, `0xBC 0x2A` SpO2).
+  and early **Save & Stop**), standard BLE Heart Rate (`0x180D`/`0x2A37`) streaming,
+  Channel 10 on-demand HR/SpO2, and profile-calibrated PPG Blood Pressure on
+  Samsung Galaxy Ring, plus periodic history sync (`0x15` / `0x16` / Channel 10 HR,
+  `0x0D` / `0x14` / calibrated PPG BP, `0xBC 0x2A` / Channel 10 SpO2).
 - **Sleep & Stages**: Full overnight hypnogram and stage breakdown (**Deep**,
   **Light**, **REM**, **Awake**) anchored to local wall-clock midnight via
   Oudmon's `0xBC 0x27` new sleep protocol, `0x44` fallback, and Samsung Channel 10
