@@ -6,6 +6,12 @@ Bluetooth Low Energy, stores every health reading privately on the device in Roo
 presents a modern Material 3 (Material You) UI with interactive charts and home screen
 widgets.
 
+## Screenshots
+
+| Home Dashboard | Activity History | Sleep & Stages | Settings & Profiles |
+|:---:|:---:|:---:|:---:|
+| <img src="docs/screenshots/home.png" width="200" alt="Home Dashboard" /> | <img src="docs/screenshots/history.png" width="200" alt="Activity History" /> | <img src="docs/screenshots/history_charts.png" width="200" alt="Sleep & Stages Charts" /> | <img src="docs/screenshots/settings.png" width="200" alt="Settings & Profiles" /> |
+
 ## Why this exists
 
 Stock smart-ring apps (such as QRing and JRing) phone home to dozens of third-party
