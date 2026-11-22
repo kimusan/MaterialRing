@@ -2,6 +2,7 @@ package com.kschulz.aro.data.model
 
 import androidx.room.Entity
 import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /** One stage segment (awake/light/deep/rem) within a sleep session. The device streams
@@ -15,6 +16,9 @@ import androidx.room.PrimaryKey
             childColumns = ["sessionId"],
             onDelete = ForeignKey.CASCADE,
         ),
+    ],
+    indices = [
+        Index(value = ["sessionId"]),
     ],
 )
 data class SleepSegment(

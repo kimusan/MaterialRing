@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -80,7 +80,7 @@ jobs:
             echo "Release APK not found in app/build/outputs/apk/release" >&2
             exit 1
           fi
-          APK_OUT="MaterialRing-${TAG_NAME}.apk"
+          APK_OUT="Aro-${TAG_NAME}.apk"
           cp "${APK_SRC}" "${APK_OUT}"
           sha256sum "${APK_OUT}" > "${APK_OUT}.sha256"
           echo "APK_OUT=${APK_OUT}" >> "$GITHUB_ENV"
@@ -89,7 +89,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: MaterialRing ${{ steps.version.outputs.tag }}
+          name: Aro ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
           files: |

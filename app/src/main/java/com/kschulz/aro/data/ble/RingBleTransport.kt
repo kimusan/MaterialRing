@@ -478,7 +478,28 @@ class RingBleTransport @Inject constructor(
             req.result.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
-        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int,
+        ) {
+            handleCharacteristicRead(g, value, status)
+        }
+
+        @Deprecated("Deprecated in Java")
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) {
+                handleCharacteristicRead(g, characteristic.value ?: ByteArray(0), status)
+            }
+        }
+
+        private fun handleCharacteristicRead(g: BluetoothGatt, value: ByteArray, status: Int) {
             val req = synchronized(gattLock) {
                 if (g !== gatt) return
                 val current = pendingRead
@@ -486,7 +507,7 @@ class RingBleTransport @Inject constructor(
                 current
             } ?: return
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                req.result.complete(characteristic.value ?: ByteArray(0))
+                req.result.complete(value)
             } else {
                 req.result.completeExceptionally(RuntimeException("gatt read failed: $status"))
             }
@@ -538,9 +559,8 @@ class RingBleTransport @Inject constructor(
         } catch (_: SecurityException) {}
         val cccd = notify.getDescriptor(GattUuids.CCCD)
         if (cccd != null) {
-            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             val started = synchronized(gattLock) {
-                try { g.writeDescriptor(cccd) } catch (_: SecurityException) { false }
+                writeCccdDescriptor(g, cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
             }
             if (!started) {
                 AroDbg.d("writeDescriptor(CCCD) returned false, marking connected immediately")
@@ -549,6 +569,22 @@ class RingBleTransport @Inject constructor(
         } else {
             markConnected()
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun writeCccdDescriptor(
+        g: BluetoothGatt,
+        cccd: BluetoothGattDescriptor,
+        value: ByteArray,
+    ): Boolean = try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            g.writeDescriptor(cccd, value) == android.bluetooth.BluetoothStatusCodes.SUCCESS
+        } else {
+            cccd.value = value
+            g.writeDescriptor(cccd)
+        }
+    } catch (_: SecurityException) {
+        false
     }
 
     private fun markConnected() {

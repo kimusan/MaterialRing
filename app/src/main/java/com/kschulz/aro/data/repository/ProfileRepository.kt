@@ -20,6 +20,7 @@ class ProfileRepository @Inject constructor(
 ) {
     fun observeAll(): Flow<List<Profile>> = dao.observeAll()
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun observeActive(): Flow<Profile?> =
         settings.observeActiveProfileId()
             .flatMapLatest { id ->

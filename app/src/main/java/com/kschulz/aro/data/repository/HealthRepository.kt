@@ -217,6 +217,7 @@ class HealthRepository @Inject constructor(
     }
 
     /** Runs [read] against the active profile, emitting [empty] when there is none. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun <T> scoped(empty: T, read: (Long) -> Flow<T>): Flow<T> =
         settings.observeActiveProfileId()
             .flatMapLatest { pid ->

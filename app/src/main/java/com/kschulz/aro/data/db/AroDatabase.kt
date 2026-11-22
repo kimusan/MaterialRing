@@ -33,7 +33,7 @@ import com.kschulz.aro.data.model.TemperatureSample
         TemperatureSample::class,
         StressSample::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 @TypeConverters(BpSourceConverter::class)
@@ -141,6 +141,14 @@ abstract class AroDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `spo2_samples` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE `temperature_samples` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE `stress_samples` ADD COLUMN `ringMac` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sleep_segments_sessionId` ON `sleep_segments` (`sessionId`)",
+                )
             }
         }
     }
