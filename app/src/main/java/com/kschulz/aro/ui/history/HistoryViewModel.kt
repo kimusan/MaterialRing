@@ -208,14 +208,14 @@ class HistoryViewModel @Inject constructor(
 
     val bodyBattery: StateFlow<List<BodyBatteryPoint>> = queryFlow
         .flatMapLatest { q ->
-            val fromHour = q.fromDay * 24L
-            val toHour = minOf((q.toDay + 1) * 24L - 1L, time.nowMillis() / 3_600_000L)
+            val fromHour = time.dayStartEpochMs(q.fromDay) / 3_600_000L
+            val toHour = minOf(time.dayStartEpochMs(q.toDay + 1) / 3_600_000L - 1L, time.nowMillis() / 3_600_000L)
             if (q.ringMac == null) {
-                health.observeBodyBatteryBetween(fromHour, (q.toDay + 1) * 24L - 1L)
+                health.observeBodyBatteryBetween(fromHour, time.dayStartEpochMs(q.toDay + 1) / 3_600_000L - 1L)
             } else {
                 combine(
-                    health.observeSleepSessions(q.fromDay * 86_400_000L - 6 * 3_600_000L, (q.toDay + 1) * 86_400_000L, q.ringMac),
-                    health.observeHeartRateBetween(q.fromDay * 86_400_000L, (q.toDay + 1) * 86_400_000L, q.ringMac),
+                    health.observeSleepSessions(time.dayStartEpochMs(q.fromDay) - 6 * 3_600_000L, time.dayStartEpochMs(q.toDay + 1), q.ringMac),
+                    health.observeHeartRateBetween(time.dayStartEpochMs(q.fromDay), time.dayStartEpochMs(q.toDay + 1), q.ringMac),
                     health.observeStepsBetween(q.fromDay, q.toDay, q.ringMac),
                 ) { sessions, hrSamples, stepDays ->
                     computeRingBodyBattery(fromHour, toHour, sessions, hrSamples, stepDays)

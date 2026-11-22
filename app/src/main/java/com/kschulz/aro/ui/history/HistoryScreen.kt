@@ -173,6 +173,7 @@ fun HistoryScreen(
                     sessions = sleep,
                     segments = sleepSegments,
                     period = period,
+                    anchorEpochDay = anchorDay,
                     goalSleepMinutes = profile?.goalSleepMinutes ?: Profile.DEFAULT_GOAL_SLEEP_MINUTES,
                 )
             }
@@ -181,6 +182,7 @@ fun HistoryScreen(
                 HeartRateChartCard(
                     samples = hr,
                     period = period,
+                    anchorEpochDay = anchorDay,
                     profile = profile,
                 )
             }
@@ -189,6 +191,7 @@ fun HistoryScreen(
                 BloodPressureChartCard(
                     readings = bp,
                     period = period,
+                    anchorEpochDay = anchorDay,
                 )
             }
 
@@ -196,6 +199,7 @@ fun HistoryScreen(
                 Spo2ChartCard(
                     samples = spo2,
                     period = period,
+                    anchorEpochDay = anchorDay,
                 )
             }
 
@@ -203,6 +207,7 @@ fun HistoryScreen(
                 StressChartCard(
                     samples = stress,
                     period = period,
+                    anchorEpochDay = anchorDay,
                 )
             }
 
@@ -210,6 +215,7 @@ fun HistoryScreen(
                 TemperatureChartCard(
                     samples = temperature,
                     period = period,
+                    anchorEpochDay = anchorDay,
                 )
             }
 
@@ -217,6 +223,7 @@ fun HistoryScreen(
                 BodyBatteryChartCard(
                     points = bodyBattery,
                     period = period,
+                    anchorEpochDay = anchorDay,
                 )
             }
         }

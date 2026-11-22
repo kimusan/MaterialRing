@@ -378,6 +378,7 @@ fun SleepPatternCard(
     sessions: List<SleepSession>,
     segments: List<SleepSegment> = emptyList(),
     period: HistoryPeriod = HistoryPeriod.MONTH,
+    anchorEpochDay: Long = LocalDate.now().toEpochDay(),
     goalSleepMinutes: Int = Profile.DEFAULT_GOAL_SLEEP_MINUTES,
     modifier: Modifier = Modifier,
 ) {
@@ -495,20 +496,18 @@ fun SleepPatternCard(
                     segments = focusSegments,
                     height = 150.dp,
                 )
-            } else if (sortedSessions.size >= 1 && segments.isNotEmpty()) {
+            } else if (period != HistoryPeriod.DAY) {
                 SleepStackedBarChart(
                     sessions = sortedSessions,
                     segmentsBySession = segmentsBySession,
+                    period = period,
+                    anchorEpochDay = anchorEpochDay,
                     height = 155.dp,
                 )
             } else {
                 NightBands(sortedSessions, 130.dp)
                 Spacer(Modifier.height(4.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    listOf("00:00", "06:00", "12:00", "18:00", "24:00").forEach {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
+                XAxisTimeRow()
             }
 
             Spacer(Modifier.height(12.dp))
@@ -719,86 +718,139 @@ private fun SleepHypnogramChart(
 
 /**
  * Weekly & Monthly Stacked Stage Bar Chart (`QSleepWeekBarView` / `QSleepMonthBarView`).
- * Each night's bar vertically stacks Deep, Light, REM, and Awake minutes.
+ * Plots all 7 (Week) or 30 (Month) calendar days in the selected window, stacking Deep, Light,
+ * REM, and Awake minutes for each night.
  */
 @Composable
 private fun SleepStackedBarChart(
     sessions: List<SleepSession>,
     segmentsBySession: Map<Long, List<SleepSegment>>,
+    period: HistoryPeriod,
+    anchorEpochDay: Long,
     height: Dp,
 ) {
-    var selectedIndex by remember(sessions) { mutableIntStateOf(sessions.lastIndex.coerceAtLeast(0)) }
-    val selectedSession = sessions.getOrNull(selectedIndex)
+    val calendarDays = remember(period, anchorEpochDay) {
+        val count = period.days
+        val start = anchorEpochDay - (count - 1)
+        (0 until count).map { start + it }
+    }
+    val sessionByDay = remember(sessions) {
+        sessions.associateBy { epochMsToLocalEpochDay(it.endEpoch) }
+    }
+    var selectedIndex by remember(calendarDays, sessionByDay) {
+        val lastWithData = calendarDays.indexOfLast { sessionByDay.containsKey(it) }
+        mutableIntStateOf(if (lastWithData >= 0) lastWithData else calendarDays.lastIndex.coerceAtLeast(0))
+    }
+    val selectedDay = calendarDays.getOrNull(selectedIndex) ?: anchorEpochDay
+    val selectedSession = sessionByDay[selectedDay]
     val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Column {
-        selectedSession?.let { sess ->
-            val durMin = ((sess.endEpoch - sess.startEpoch) / 60_000L).toInt()
-            Text(
-                text = "${formatEpochDate(sess.endEpoch)}  •  ${durMin / 60}h ${durMin % 60}m",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = SleepLightLavender,
-            )
-            Spacer(Modifier.height(4.dp))
-        }
+        val durMin = selectedSession?.let { ((it.endEpoch - it.startEpoch) / 60_000L).toInt() } ?: 0
+        Text(
+            text = if (durMin > 0) {
+                "${formatEpochDay(selectedDay)}  •  ${durMin / 60}h ${durMin % 60}m"
+            } else {
+                "${formatEpochDay(selectedDay)}  •  No sleep recorded"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = SleepLightLavender,
+        )
+        Spacer(Modifier.height(4.dp))
 
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(height)
-                .pointerInput(sessions) {
-                    detectTapGestures { offset ->
-                        if (sessions.isNotEmpty()) {
-                            val idx = ((offset.x / size.width.coerceAtLeast(1)) * sessions.size)
-                                .toInt()
-                                .coerceIn(0, sessions.lastIndex)
-                            selectedIndex = idx
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(height)
+                    .pointerInput(calendarDays) {
+                        detectTapGestures { offset ->
+                            if (calendarDays.isNotEmpty()) {
+                                val idx = ((offset.x / size.width.coerceAtLeast(1)) * calendarDays.size)
+                                    .toInt()
+                                    .coerceIn(0, calendarDays.lastIndex)
+                                selectedIndex = idx
+                            }
                         }
                     }
-                },
-        ) {
-            if (sessions.isEmpty()) return@Canvas
-            val maxMin = 600f // 10 hours scale
-            listOf(0.3f, 0.6f, 0.9f).forEach { frac ->
-                val y = size.height * (1f - frac)
-                drawLine(
-                    color = gridColor.copy(alpha = 0.45f),
-                    start = Offset(0f, y),
-                    end = Offset(size.width, y),
-                    pathEffect = DashedGridEffect,
-                )
+                    .pointerInput(calendarDays) {
+                        detectHorizontalDragGestures { change, _ ->
+                            if (calendarDays.isNotEmpty()) {
+                                val idx = ((change.position.x / size.width.coerceAtLeast(1)) * calendarDays.size)
+                                    .toInt()
+                                    .coerceIn(0, calendarDays.lastIndex)
+                                selectedIndex = idx
+                            }
+                        }
+                    },
+            ) {
+                if (calendarDays.isEmpty()) return@Canvas
+                val maxMin = 600f // 10 hours scale
+                listOf(1f / 3f, 2f / 3f, 1f).forEach { frac ->
+                    val y = size.height * (1f - frac)
+                    drawLine(
+                        color = gridColor.copy(alpha = 0.45f),
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        pathEffect = DashedGridEffect,
+                    )
+                }
+
+                val slotW = size.width / calendarDays.size
+                val barW = (slotW * 0.55f).coerceIn(4f, 34f)
+                calendarDays.forEachIndexed { idx, day ->
+                    val sess = sessionByDay[day]
+                    val left = idx * slotW + (slotW - barW) / 2f
+                    if (sess == null) {
+                        drawRoundRect(
+                            color = SleepLightLavender.copy(alpha = 0.16f),
+                            topLeft = Offset(left, size.height - 3f),
+                            size = Size(barW, 3f),
+                            cornerRadius = CornerRadius(2f, 2f),
+                        )
+                    } else {
+                        val segs = segmentsBySession[sess.id].orEmpty()
+                        val totals = computeStageTotals(segs, listOf(sess))
+                        val parts = listOf(
+                            SleepDeepViolet to totals.deepMin,
+                            SleepLightLavender to totals.lightMin,
+                            SleepRemBlue to totals.remMin,
+                            SleepAwakeGold to totals.awakeMin,
+                        )
+                        var currentBottom = size.height
+                        parts.forEach { (color, mins) ->
+                            if (mins > 0) {
+                                val h = (mins / maxMin * size.height).coerceIn(2f, currentBottom)
+                                drawRoundRect(
+                                    color = if (idx == selectedIndex) color else color.copy(alpha = 0.78f),
+                                    topLeft = Offset(left, currentBottom - h),
+                                    size = Size(barW, h),
+                                    cornerRadius = CornerRadius(4f, 4f),
+                                )
+                                currentBottom -= h
+                            }
+                        }
+                    }
+                }
             }
 
-            val slotW = size.width / sessions.size
-            val barW = (slotW * 0.55f).coerceIn(6f, 36f)
-            sessions.forEachIndexed { idx, sess ->
-                val segs = segmentsBySession[sess.id].orEmpty()
-                val totals = computeStageTotals(segs, listOf(sess))
-                val parts = listOf(
-                    SleepDeepViolet to totals.deepMin,
-                    SleepLightLavender to totals.lightMin,
-                    SleepRemBlue to totals.remMin,
-                    SleepAwakeGold to totals.awakeMin,
-                )
-                val left = idx * slotW + (slotW - barW) / 2f
-                var currentBottom = size.height
-                parts.forEach { (color, mins) ->
-                    if (mins > 0) {
-                        val h = (mins / maxMin * size.height).coerceIn(2f, currentBottom)
-                        drawRoundRect(
-                            color = if (idx == selectedIndex) color else color.copy(alpha = 0.78f),
-                            topLeft = Offset(left, currentBottom - h),
-                            size = Size(barW, h),
-                            cornerRadius = CornerRadius(4f, 4f),
-                        )
-                        currentBottom -= h
-                    }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .height(height)
+                    .padding(end = 2.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+                horizontalAlignment = Alignment.End,
+            ) {
+                listOf("10h", "6.5h", "3.5h", "0h").forEach { lbl ->
+                    Text(lbl, style = MaterialTheme.typography.labelSmall, color = labelColor)
                 }
             }
         }
         Spacer(Modifier.height(4.dp))
-        XAxisDateRow(sessions.map { it.endEpoch / 86_400_000L })
+        XAxisDateRow(calendarDays)
     }
 }
 
@@ -850,12 +902,30 @@ private fun StageBreakdownSection(totals: StageTotals) {
 fun HeartRateChartCard(
     samples: List<HeartRateSample>,
     period: HistoryPeriod = HistoryPeriod.MONTH,
+    anchorEpochDay: Long = LocalDate.now().toEpochDay(),
     profile: Profile? = null,
     modifier: Modifier = Modifier,
 ) {
     val sorted = remember(samples) { samples.sortedBy { it.epochMs } }
     val bpms = remember(sorted) { sorted.map { it.bpm } }
-    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+
+    val calendarDays = remember(period, anchorEpochDay) {
+        val count = period.days
+        val start = anchorEpochDay - (count - 1)
+        (0 until count).map { start + it }
+    }
+    val hrByDay = remember(sorted) {
+        sorted.groupBy { epochMsToLocalEpochDay(it.epochMs) }
+    }
+
+    var selectedDayIdx by remember(sorted, period, anchorEpochDay) {
+        if (period == HistoryPeriod.DAY) {
+            mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0))
+        } else {
+            val lastWithData = calendarDays.indexOfLast { hrByDay[it]?.isNotEmpty() == true }
+            mutableIntStateOf(if (lastWithData >= 0) lastWithData else calendarDays.lastIndex.coerceAtLeast(0))
+        }
+    }
 
     ChartCard(
         title = "Heart Rate",
@@ -866,39 +936,97 @@ fun HeartRateChartCard(
         if (sorted.isEmpty()) {
             EmptyChartText()
         } else {
-            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Column {
+            if (period == HistoryPeriod.DAY) {
+                val selected = sorted.getOrNull(selectedDayIdx) ?: sorted.last()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Column {
+                        Text(
+                            text = "${selected.bpm} bpm",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = HeartCoral,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
-                        text = "${selected.bpm} bpm",
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = HeartCoral,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "${sorted.size} reading(s)",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(
-                    text = "${sorted.size} reading(s)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(8.dp))
 
-            HeartRateAreaChart(
-                samples = sorted,
-                selectedIndex = selectedIdx,
-                onSelectIndex = { selectedIdx = it },
-                height = 165.dp,
-            )
+                HeartRateAreaChart(
+                    samples = sorted,
+                    anchorEpochDay = anchorEpochDay,
+                    selectedIndex = selectedDayIdx,
+                    onSelectIndex = { selectedDayIdx = it },
+                    height = 165.dp,
+                )
+            } else {
+                val selDay = calendarDays.getOrNull(selectedDayIdx) ?: anchorEpochDay
+                val daySamples = hrByDay[selDay].orEmpty()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Column {
+                        if (daySamples.isNotEmpty()) {
+                            val avg = daySamples.map { it.bpm }.average().roundToInt()
+                            val minB = daySamples.minOf { it.bpm }
+                            val maxB = daySamples.maxOf { it.bpm }
+                            Text(
+                                text = "$avg bpm avg",
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = HeartCoral,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = "${formatEpochDay(selDay)}  •  Range $minB–$maxB bpm (${daySamples.size} readings)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            Text(
+                                text = "No readings",
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = HeartCoral.copy(alpha = 0.6f),
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = formatEpochDay(selDay),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Text(
+                        text = "${sorted.size} reading(s)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+
+                HeartRatePeriodRangeChart(
+                    calendarDays = calendarDays,
+                    hrByDay = hrByDay,
+                    selectedIndex = selectedDayIdx,
+                    onSelectIndex = { selectedDayIdx = it },
+                    height = 165.dp,
+                )
+                Spacer(Modifier.height(4.dp))
+                XAxisDateRow(calendarDays)
+            }
 
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -917,6 +1045,7 @@ fun HeartRateChartCard(
 @Composable
 private fun HeartRateAreaChart(
     samples: List<HeartRateSample>,
+    anchorEpochDay: Long,
     selectedIndex: Int,
     onSelectIndex: (Int) -> Unit,
     height: Dp,
@@ -925,6 +1054,10 @@ private fun HeartRateAreaChart(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val minScale = 40f
     val maxScale = 190f
+    val dayStartMs = remember(anchorEpochDay) {
+        LocalDate.ofEpochDay(anchorEpochDay).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    }
+    val dayDurationMs = 86_400_000f
 
     Column {
         Box(modifier = Modifier.fillMaxWidth()) {
@@ -932,22 +1065,32 @@ private fun HeartRateAreaChart(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(height)
-                    .pointerInput(samples) {
+                    .pointerInput(samples, dayStartMs) {
                         detectTapGestures { offset ->
                             if (samples.isNotEmpty()) {
-                                val idx = ((offset.x / size.width.coerceAtLeast(1)) * samples.size)
-                                    .toInt()
-                                    .coerceIn(0, samples.lastIndex)
+                                val targetFrac = (offset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                                val idx = nearestSampleIndexForFraction(
+                                    samples = samples,
+                                    dayStartMs = dayStartMs,
+                                    dayDurationMs = dayDurationMs,
+                                    targetFraction = targetFrac,
+                                    extractEpochMs = { it.epochMs },
+                                )
                                 onSelectIndex(idx)
                             }
                         }
                     }
-                    .pointerInput(samples) {
+                    .pointerInput(samples, dayStartMs) {
                         detectHorizontalDragGestures { change, _ ->
                             if (samples.isNotEmpty()) {
-                                val idx = ((change.position.x / size.width.coerceAtLeast(1)) * samples.size)
-                                    .toInt()
-                                    .coerceIn(0, samples.lastIndex)
+                                val targetFrac = (change.position.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                                val idx = nearestSampleIndexForFraction(
+                                    samples = samples,
+                                    dayStartMs = dayStartMs,
+                                    dayDurationMs = dayDurationMs,
+                                    targetFraction = targetFrac,
+                                    extractEpochMs = { it.epochMs },
+                                )
                                 onSelectIndex(idx)
                             }
                         }
@@ -969,8 +1112,8 @@ private fun HeartRateAreaChart(
                 }
 
                 val xs = FloatArray(samples.size) { i ->
-                    if (samples.size == 1) size.width / 2f
-                    else padX + i * usableW / (samples.size - 1)
+                    val frac = ((samples[i].epochMs - dayStartMs) / dayDurationMs).coerceIn(0f, 1f)
+                    padX + frac * usableW
                 }
                 val ys = FloatArray(samples.size) { i ->
                     val norm = ((samples[i].bpm - minScale) / (maxScale - minScale)).coerceIn(0f, 1f)
@@ -1036,12 +1179,141 @@ private fun HeartRateAreaChart(
             }
         }
         Spacer(Modifier.height(4.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatEpochTime(samples.first().epochMs), style = MaterialTheme.typography.bodySmall, color = labelColor)
-            if (samples.size > 2) {
-                Text(formatEpochTime(samples[samples.size / 2].epochMs), style = MaterialTheme.typography.bodySmall, color = labelColor)
+        XAxisTimeRow()
+    }
+}
+
+/**
+ * Weekly & Monthly Heart Rate Range Chart: plots each calendar day's Min–Max BPM range
+ * as a vertical coral capsule with an Average BPM polyline connecting active days.
+ */
+@Composable
+private fun HeartRatePeriodRangeChart(
+    calendarDays: List<Long>,
+    hrByDay: Map<Long, List<HeartRateSample>>,
+    selectedIndex: Int,
+    onSelectIndex: (Int) -> Unit,
+    height: Dp,
+) {
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val minScale = 40f
+    val maxScale = 190f
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(height)
+                .pointerInput(calendarDays) {
+                    detectTapGestures { offset ->
+                        if (calendarDays.isNotEmpty()) {
+                            val idx = ((offset.x / size.width.coerceAtLeast(1)) * calendarDays.size)
+                                .toInt()
+                                .coerceIn(0, calendarDays.lastIndex)
+                            onSelectIndex(idx)
+                        }
+                    }
+                }
+                .pointerInput(calendarDays) {
+                    detectHorizontalDragGestures { change, _ ->
+                        if (calendarDays.isNotEmpty()) {
+                            val idx = ((change.position.x / size.width.coerceAtLeast(1)) * calendarDays.size)
+                                .toInt()
+                                .coerceIn(0, calendarDays.lastIndex)
+                            onSelectIndex(idx)
+                        }
+                    }
+                },
+        ) {
+            if (calendarDays.isEmpty()) return@Canvas
+            val padY = 10f
+            val usableH = (size.height - padY * 2).coerceAtLeast(1f)
+            fun bpmToY(bpm: Float): Float {
+                val norm = ((bpm - minScale) / (maxScale - minScale)).coerceIn(0f, 1f)
+                return padY + usableH * (1f - norm)
             }
-            Text(formatEpochTime(samples.last().epochMs), style = MaterialTheme.typography.bodySmall, color = labelColor)
+
+            listOf(40f, 85f, 130f, 175f).forEach { level ->
+                val y = bpmToY(level)
+                drawLine(
+                    color = gridColor.copy(alpha = 0.45f),
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    pathEffect = DashedGridEffect,
+                )
+            }
+
+            val slotW = size.width / calendarDays.size
+            val barW = (slotW * 0.48f).coerceIn(4f, 24f)
+            val avgPoints = mutableListOf<Offset>()
+
+            calendarDays.forEachIndexed { idx, day ->
+                val list = hrByDay[day].orEmpty()
+                val cx = idx * slotW + slotW / 2f
+                val left = cx - barW / 2f
+                val isSelected = idx == selectedIndex
+                if (list.isEmpty()) {
+                    drawRoundRect(
+                        color = HeartCoral.copy(alpha = 0.16f),
+                        topLeft = Offset(left, size.height - 3f),
+                        size = Size(barW, 3f),
+                        cornerRadius = CornerRadius(2f, 2f),
+                    )
+                } else {
+                    val minBpm = list.minOf { it.bpm }.toFloat()
+                    val maxBpm = list.maxOf { it.bpm }.toFloat()
+                    val avgBpm = list.map { it.bpm }.average().toFloat()
+                    val yTop = bpmToY(maxBpm)
+                    val yBottom = bpmToY(minBpm)
+                    val capsuleH = (yBottom - yTop).coerceAtLeast(barW)
+                    val capsuleTop = ((yTop + yBottom) / 2f - capsuleH / 2f).coerceIn(0f, size.height - capsuleH)
+
+                    drawRoundRect(
+                        color = if (isSelected) HeartCoral.copy(alpha = 0.55f) else HeartCoral.copy(alpha = 0.30f),
+                        topLeft = Offset(left, capsuleTop),
+                        size = Size(barW, capsuleH),
+                        cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                    )
+                    val avgY = bpmToY(avgBpm)
+                    avgPoints.add(Offset(cx, avgY))
+                }
+                if (isSelected) {
+                    drawLine(
+                        color = HeartCoral.copy(alpha = 0.6f),
+                        start = Offset(cx, 0f),
+                        end = Offset(cx, size.height),
+                        strokeWidth = 2f,
+                        pathEffect = DashedGridEffect,
+                    )
+                }
+            }
+
+            if (avgPoints.size >= 2) {
+                val avgPath = Path().apply {
+                    avgPoints.forEachIndexed { i, pt ->
+                        if (i == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+                    }
+                }
+                drawPath(avgPath, color = HeartCoral, style = Stroke(width = 3f, cap = StrokeCap.Round))
+            }
+            avgPoints.forEach { pt ->
+                drawCircle(Color.White, radius = 5.5f, center = pt)
+                drawCircle(HeartCoral, radius = 3.8f, center = pt)
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .height(height)
+                .padding(end = 2.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.End,
+        ) {
+            listOf("175", "130", "85", "40").forEach { lbl ->
+                Text(lbl, style = MaterialTheme.typography.labelSmall, color = labelColor)
+            }
         }
     }
 }
@@ -1102,10 +1374,27 @@ private fun HeartRateZonesSection(bpms: List<Int>, maxHr: Int) {
 fun BloodPressureChartCard(
     readings: List<BloodPressure>,
     period: HistoryPeriod = HistoryPeriod.MONTH,
+    anchorEpochDay: Long = LocalDate.now().toEpochDay(),
     modifier: Modifier = Modifier,
 ) {
     val sorted = remember(readings) { readings.sortedBy { it.epochMs } }
-    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+    val calendarDays = remember(period, anchorEpochDay) {
+        val count = period.days
+        val start = anchorEpochDay - (count - 1)
+        (0 until count).map { start + it }
+    }
+    val bpByDay = remember(sorted) {
+        sorted.groupBy { epochMsToLocalEpochDay(it.epochMs) }
+    }
+
+    var selectedIdx by remember(sorted, period, anchorEpochDay) {
+        if (period == HistoryPeriod.DAY) {
+            mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0))
+        } else {
+            val lastWithData = calendarDays.indexOfLast { bpByDay[it]?.isNotEmpty() == true }
+            mutableIntStateOf(if (lastWithData >= 0) lastWithData else calendarDays.lastIndex.coerceAtLeast(0))
+        }
+    }
 
     ChartCard(
         title = "Blood Pressure",
@@ -1116,39 +1405,95 @@ fun BloodPressureChartCard(
         if (sorted.isEmpty()) {
             EmptyChartText()
         } else {
-            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Column {
-                    Text(
-                        text = "${selected.sbp}/${selected.dbp} mmHg",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = BpSystolicAmber,
-                    )
-                    val srcLabel = if (selected.source == BpSource.MANUAL) "Manual" else "Auto"
-                    Text(
-                        text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}  •  $srcLabel",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            if (period == HistoryPeriod.DAY) {
+                val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Column {
+                        Text(
+                            text = "${selected.sbp}/${selected.dbp} mmHg",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = BpSystolicAmber,
+                        )
+                        val srcLabel = if (selected.source == BpSource.MANUAL) "Manual" else "Auto"
+                        Text(
+                            text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}  •  $srcLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        LegendDot("SBP", BpSystolicAmber)
+                        LegendDot("DBP", BpDiastolicIndigo)
+                    }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    LegendDot("SBP", BpSystolicAmber)
-                    LegendDot("DBP", BpDiastolicIndigo)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(8.dp))
 
-            BloodPressureDualChart(
-                readings = sorted,
-                selectedIndex = selectedIdx,
-                onSelectIndex = { selectedIdx = it },
-                height = 175.dp,
-            )
+                BloodPressureDualChart(
+                    readings = sorted,
+                    anchorEpochDay = anchorEpochDay,
+                    selectedIndex = selectedIdx,
+                    onSelectIndex = { selectedIdx = it },
+                    height = 175.dp,
+                )
+            } else {
+                val selDay = calendarDays.getOrNull(selectedIdx) ?: anchorEpochDay
+                val dayReadings = bpByDay[selDay].orEmpty()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Column {
+                        if (dayReadings.isNotEmpty()) {
+                            val avgS = dayReadings.map { it.sbp }.average().roundToInt()
+                            val avgD = dayReadings.map { it.dbp }.average().roundToInt()
+                            Text(
+                                text = "$avgS/$avgD mmHg avg",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = BpSystolicAmber,
+                            )
+                            Text(
+                                text = "${formatEpochDay(selDay)}  •  ${dayReadings.size} reading(s)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            Text(
+                                text = "No readings",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = BpSystolicAmber.copy(alpha = 0.6f),
+                            )
+                            Text(
+                                text = formatEpochDay(selDay),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        LegendDot("SBP", BpSystolicAmber)
+                        LegendDot("DBP", BpDiastolicIndigo)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+
+                BloodPressurePeriodChart(
+                    calendarDays = calendarDays,
+                    bpByDay = bpByDay,
+                    selectedIndex = selectedIdx,
+                    onSelectIndex = { selectedIdx = it },
+                    height = 175.dp,
+                )
+                Spacer(Modifier.height(4.dp))
+                XAxisDateRow(calendarDays)
+            }
 
             Spacer(Modifier.height(12.dp))
             val avgSbp = sorted.map { it.sbp }.average().roundToInt()
@@ -1214,6 +1559,7 @@ fun BloodPressureChartCard(
 @Composable
 private fun BloodPressureDualChart(
     readings: List<BloodPressure>,
+    anchorEpochDay: Long,
     selectedIndex: Int,
     onSelectIndex: (Int) -> Unit,
     height: Dp,
@@ -1222,6 +1568,10 @@ private fun BloodPressureDualChart(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val minScale = 50f
     val maxScale = 190f
+    val dayStartMs = remember(anchorEpochDay) {
+        LocalDate.ofEpochDay(anchorEpochDay).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    }
+    val dayDurationMs = 86_400_000f
 
     Column {
         Box(modifier = Modifier.fillMaxWidth()) {
@@ -1229,22 +1579,32 @@ private fun BloodPressureDualChart(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(height)
-                    .pointerInput(readings) {
+                    .pointerInput(readings, dayStartMs) {
                         detectTapGestures { offset ->
                             if (readings.isNotEmpty()) {
-                                val idx = ((offset.x / size.width.coerceAtLeast(1)) * readings.size)
-                                    .toInt()
-                                    .coerceIn(0, readings.lastIndex)
+                                val targetFrac = (offset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                                val idx = nearestSampleIndexForFraction(
+                                    samples = readings,
+                                    dayStartMs = dayStartMs,
+                                    dayDurationMs = dayDurationMs,
+                                    targetFraction = targetFrac,
+                                    extractEpochMs = { it.epochMs },
+                                )
                                 onSelectIndex(idx)
                             }
                         }
                     }
-                    .pointerInput(readings) {
+                    .pointerInput(readings, dayStartMs) {
                         detectHorizontalDragGestures { change, _ ->
                             if (readings.isNotEmpty()) {
-                                val idx = ((change.position.x / size.width.coerceAtLeast(1)) * readings.size)
-                                    .toInt()
-                                    .coerceIn(0, readings.lastIndex)
+                                val targetFrac = (change.position.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                                val idx = nearestSampleIndexForFraction(
+                                    samples = readings,
+                                    dayStartMs = dayStartMs,
+                                    dayDurationMs = dayDurationMs,
+                                    targetFraction = targetFrac,
+                                    extractEpochMs = { it.epochMs },
+                                )
                                 onSelectIndex(idx)
                             }
                         }
@@ -1266,8 +1626,8 @@ private fun BloodPressureDualChart(
                 }
 
                 val xs = FloatArray(readings.size) { i ->
-                    if (readings.size == 1) size.width / 2f
-                    else padX + i * usableW / (readings.size - 1)
+                    val frac = ((readings[i].epochMs - dayStartMs) / dayDurationMs).coerceIn(0f, 1f)
+                    padX + frac * usableW
                 }
                 val sbpYs = FloatArray(readings.size) { i ->
                     val norm = ((readings[i].sbp - minScale) / (maxScale - minScale)).coerceIn(0f, 1f)
@@ -1336,6 +1696,151 @@ private fun BloodPressureDualChart(
                 }
             }
         }
+        Spacer(Modifier.height(4.dp))
+        XAxisTimeRow()
+    }
+}
+
+/**
+ * Weekly & Monthly Blood Pressure Chart: plots daily average SBP (amber) and DBP (indigo)
+ * across the 7-day or 30-day calendar window with pulse-pressure bars and polylines.
+ */
+@Composable
+private fun BloodPressurePeriodChart(
+    calendarDays: List<Long>,
+    bpByDay: Map<Long, List<BloodPressure>>,
+    selectedIndex: Int,
+    onSelectIndex: (Int) -> Unit,
+    height: Dp,
+) {
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val minScale = 50f
+    val maxScale = 190f
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(height)
+                .pointerInput(calendarDays) {
+                    detectTapGestures { offset ->
+                        if (calendarDays.isNotEmpty()) {
+                            val idx = ((offset.x / size.width.coerceAtLeast(1)) * calendarDays.size)
+                                .toInt()
+                                .coerceIn(0, calendarDays.lastIndex)
+                            onSelectIndex(idx)
+                        }
+                    }
+                }
+                .pointerInput(calendarDays) {
+                    detectHorizontalDragGestures { change, _ ->
+                        if (calendarDays.isNotEmpty()) {
+                            val idx = ((change.position.x / size.width.coerceAtLeast(1)) * calendarDays.size)
+                                .toInt()
+                                .coerceIn(0, calendarDays.lastIndex)
+                            onSelectIndex(idx)
+                        }
+                    }
+                },
+        ) {
+            if (calendarDays.isEmpty()) return@Canvas
+            val padY = 12f
+            val usableH = (size.height - padY * 2).coerceAtLeast(1f)
+            fun valToY(mmHg: Float): Float {
+                val norm = ((mmHg - minScale) / (maxScale - minScale)).coerceIn(0f, 1f)
+                return padY + usableH * (1f - norm)
+            }
+
+            listOf(60f, 90f, 120f, 150f, 180f).forEach { level ->
+                val y = valToY(level)
+                drawLine(
+                    color = gridColor.copy(alpha = 0.45f),
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    pathEffect = DashedGridEffect,
+                )
+            }
+
+            val slotW = size.width / calendarDays.size
+            val barW = (slotW * 0.44f).coerceIn(4f, 20f)
+            val sbpPoints = mutableListOf<Offset>()
+            val dbpPoints = mutableListOf<Offset>()
+
+            calendarDays.forEachIndexed { idx, day ->
+                val list = bpByDay[day].orEmpty()
+                val cx = idx * slotW + slotW / 2f
+                val left = cx - barW / 2f
+                val isSelected = idx == selectedIndex
+                if (list.isEmpty()) {
+                    drawRoundRect(
+                        color = BpSystolicAmber.copy(alpha = 0.16f),
+                        topLeft = Offset(left, size.height - 3f),
+                        size = Size(barW, 3f),
+                        cornerRadius = CornerRadius(2f, 2f),
+                    )
+                } else {
+                    val avgSbp = list.map { it.sbp }.average().toFloat()
+                    val avgDbp = list.map { it.dbp }.average().toFloat()
+                    val ySbp = valToY(avgSbp)
+                    val yDbp = valToY(avgDbp)
+                    val h = (yDbp - ySbp).coerceAtLeast(barW)
+                    drawRoundRect(
+                        color = if (isSelected) BpSystolicAmber.copy(alpha = 0.45f) else BpSystolicAmber.copy(alpha = 0.25f),
+                        topLeft = Offset(left, ySbp),
+                        size = Size(barW, h),
+                        cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                    )
+                    sbpPoints.add(Offset(cx, ySbp))
+                    dbpPoints.add(Offset(cx, yDbp))
+                }
+                if (isSelected) {
+                    drawLine(
+                        color = BpSystolicAmber.copy(alpha = 0.65f),
+                        start = Offset(cx, 0f),
+                        end = Offset(cx, size.height),
+                        strokeWidth = 2f,
+                        pathEffect = DashedGridEffect,
+                    )
+                }
+            }
+
+            if (sbpPoints.size >= 2) {
+                val sbpPath = Path().apply {
+                    sbpPoints.forEachIndexed { i, pt ->
+                        if (i == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+                    }
+                }
+                val dbpPath = Path().apply {
+                    dbpPoints.forEachIndexed { i, pt ->
+                        if (i == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+                    }
+                }
+                drawPath(sbpPath, color = BpSystolicAmber, style = Stroke(width = 3f, cap = StrokeCap.Round))
+                drawPath(dbpPath, color = BpDiastolicIndigo, style = Stroke(width = 3f, cap = StrokeCap.Round))
+            }
+            sbpPoints.forEach { pt ->
+                drawCircle(Color.White, radius = 5.5f, center = pt)
+                drawCircle(BpSystolicAmber, radius = 3.8f, center = pt)
+            }
+            dbpPoints.forEach { pt ->
+                drawCircle(Color.White, radius = 5.5f, center = pt)
+                drawCircle(BpDiastolicIndigo, radius = 3.8f, center = pt)
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .height(height)
+                .padding(end = 2.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.End,
+        ) {
+            listOf("180", "150", "120", "90", "60").forEach { lbl ->
+                Text(lbl, style = MaterialTheme.typography.labelSmall, color = labelColor)
+            }
+        }
     }
 }
 
@@ -1343,17 +1848,36 @@ val Spo2Teal = Color(0xFF00ACC1)
 
 /**
  * Blood Oxygen (SpO2) Card:
- * - Shows latest / selected SpO2 %, interactive bar chart on a 0..100% scale, and
- *   Min / Avg / Max summary stats.
+ * - Day view: 24-hour hourly bar chart (00:00..24:00 X-axis).
+ * - Week / Month view: 7-day or 30-day calendar bar chart (MM/dd X-axis).
  */
 @Composable
 fun Spo2ChartCard(
     samples: List<com.kschulz.aro.data.model.Spo2Sample>,
     period: HistoryPeriod = HistoryPeriod.DAY,
+    anchorEpochDay: Long = LocalDate.now().toEpochDay(),
     modifier: Modifier = Modifier,
 ) {
     val sorted = remember(samples) { samples.sortedBy { it.epochMs } }
-    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+    val chartSlots = remember(sorted, period, anchorEpochDay) {
+        buildPeriodSlots(
+            period = period,
+            anchorEpochDay = anchorEpochDay,
+            items = sorted,
+            extractEpochMs = { it.epochMs },
+            aggregate = { list -> list.map { it.percent }.average().roundToInt() },
+            formatDetail = { list ->
+                val minP = list.minOf { it.minPercent }
+                val maxP = list.maxOf { it.maxPercent }
+                val avgP = list.map { it.percent }.average().roundToInt()
+                if (minP != maxP) "$minP–$maxP% (avg $avgP%)" else "$avgP%"
+            },
+        )
+    }
+    var selectedIdx by remember(chartSlots) {
+        val lastNonZero = chartSlots.indexOfLast { it.value > 0 }
+        mutableIntStateOf(if (lastNonZero >= 0) lastNonZero else chartSlots.lastIndex.coerceAtLeast(0))
+    }
 
     ChartCard(
         title = "Blood Oxygen (SpO2)",
@@ -1369,34 +1893,24 @@ fun Spo2ChartCard(
         if (sorted.isEmpty()) {
             EmptyChartText()
         } else {
-            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Column {
-                    Text(
-                        text = if (selected.minPercent != selected.maxPercent) {
-                            "${selected.minPercent}–${selected.maxPercent}%"
-                        } else {
-                            "${selected.percent}%"
-                        },
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Spo2Teal,
-                    )
-                    Text(
-                        text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            val selSlot = chartSlots.getOrNull(selectedIdx)
+            Column {
+                Text(
+                    text = if (selSlot != null && selSlot.value > 0) selSlot.detailText else "No reading",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (selSlot != null && selSlot.value > 0) Spo2Teal else Spo2Teal.copy(alpha = 0.6f),
+                )
+                Text(
+                    text = selSlot?.labelText ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(Modifier.height(8.dp))
 
             InteractiveBarChart(
-                values = sorted.map { it.percent },
+                values = chartSlots.map { it.value },
                 selectedIndex = selectedIdx,
                 onSelectIndex = { selectedIdx = it },
                 barColor = Spo2Teal,
@@ -1404,6 +1918,12 @@ fun Spo2ChartCard(
                 height = 145.dp,
                 formatYLabel = { "$it%" },
             )
+            Spacer(Modifier.height(4.dp))
+            if (period == HistoryPeriod.DAY) {
+                XAxisTimeRow()
+            } else {
+                XAxisDateRow(chartSlots.map { it.epochDay })
+            }
 
             Spacer(Modifier.height(10.dp))
             val minVal = sorted.minOf { it.minPercent }
@@ -1425,10 +1945,24 @@ val TempAmber = Color(0xFFFFA726)
 fun StressChartCard(
     samples: List<com.kschulz.aro.data.model.StressSample>,
     period: HistoryPeriod = HistoryPeriod.DAY,
+    anchorEpochDay: Long = LocalDate.now().toEpochDay(),
     modifier: Modifier = Modifier,
 ) {
     val sorted = remember(samples) { samples.sortedBy { it.epochMs } }
-    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+    val chartSlots = remember(sorted, period, anchorEpochDay) {
+        buildPeriodSlots(
+            period = period,
+            anchorEpochDay = anchorEpochDay,
+            items = sorted,
+            extractEpochMs = { it.epochMs },
+            aggregate = { list -> list.map { it.score }.average().roundToInt() },
+            formatDetail = { list -> "${list.map { it.score }.average().roundToInt()} / 100" },
+        )
+    }
+    var selectedIdx by remember(chartSlots) {
+        val lastNonZero = chartSlots.indexOfLast { it.value > 0 }
+        mutableIntStateOf(if (lastNonZero >= 0) lastNonZero else chartSlots.lastIndex.coerceAtLeast(0))
+    }
 
     ChartCard(
         title = "Stress",
@@ -1444,23 +1978,23 @@ fun StressChartCard(
         if (sorted.isEmpty()) {
             EmptyChartText()
         } else {
-            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
+            val selSlot = chartSlots.getOrNull(selectedIdx)
             Column {
                 Text(
-                    text = "${selected.score} / 100",
+                    text = if (selSlot != null && selSlot.value > 0) selSlot.detailText else "No reading",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    color = StressOrange,
+                    color = if (selSlot != null && selSlot.value > 0) StressOrange else StressOrange.copy(alpha = 0.6f),
                 )
                 Text(
-                    text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
+                    text = selSlot?.labelText ?: "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.height(8.dp))
             InteractiveBarChart(
-                values = sorted.map { it.score },
+                values = chartSlots.map { it.value },
                 selectedIndex = selectedIdx,
                 onSelectIndex = { selectedIdx = it },
                 barColor = StressOrange,
@@ -1468,6 +2002,12 @@ fun StressChartCard(
                 height = 140.dp,
                 formatYLabel = { it.toString() },
             )
+            Spacer(Modifier.height(4.dp))
+            if (period == HistoryPeriod.DAY) {
+                XAxisTimeRow()
+            } else {
+                XAxisDateRow(chartSlots.map { it.epochDay })
+            }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 StatMiniBox("Low", "${sorted.minOf { it.score }}", DistanceGreen, Modifier.weight(1f))
@@ -1482,10 +2022,28 @@ fun StressChartCard(
 fun TemperatureChartCard(
     samples: List<com.kschulz.aro.data.model.TemperatureSample>,
     period: HistoryPeriod = HistoryPeriod.DAY,
+    anchorEpochDay: Long = LocalDate.now().toEpochDay(),
     modifier: Modifier = Modifier,
 ) {
     val sorted = remember(samples) { samples.sortedBy { it.epochMs } }
-    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+    val chartSlots = remember(sorted, period, anchorEpochDay) {
+        buildPeriodSlots(
+            period = period,
+            anchorEpochDay = anchorEpochDay,
+            items = sorted,
+            extractEpochMs = { it.epochMs },
+            aggregate = { list -> (list.map { it.bodyCelsius }.average() * 10.0).roundToInt() },
+            formatDetail = { list ->
+                val body = list.map { it.bodyCelsius }.average()
+                val skin = list.map { it.surfaceCelsius }.average()
+                "%.2f °C body (%.1f °C skin)".format(body, skin)
+            },
+        )
+    }
+    var selectedIdx by remember(chartSlots) {
+        val lastNonZero = chartSlots.indexOfLast { it.value > 0 }
+        mutableIntStateOf(if (lastNonZero >= 0) lastNonZero else chartSlots.lastIndex.coerceAtLeast(0))
+    }
 
     ChartCard(
         title = "Temperature",
@@ -1501,23 +2059,23 @@ fun TemperatureChartCard(
         if (sorted.isEmpty()) {
             EmptyChartText()
         } else {
-            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
+            val selSlot = chartSlots.getOrNull(selectedIdx)
             Column {
                 Text(
-                    text = "%.2f °C body (%.1f °C skin)".format(selected.bodyCelsius, selected.surfaceCelsius),
+                    text = if (selSlot != null && selSlot.value > 0) selSlot.detailText else "No reading",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    color = TempAmber,
+                    color = if (selSlot != null && selSlot.value > 0) TempAmber else TempAmber.copy(alpha = 0.6f),
                 )
                 Text(
-                    text = "${formatEpochDate(selected.epochMs)} ${formatEpochTime(selected.epochMs)}",
+                    text = selSlot?.labelText ?: "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.height(8.dp))
             InteractiveBarChart(
-                values = sorted.map { (it.bodyCelsius * 10).toInt() },
+                values = chartSlots.map { it.value },
                 selectedIndex = selectedIdx,
                 onSelectIndex = { selectedIdx = it },
                 barColor = TempAmber,
@@ -1525,6 +2083,12 @@ fun TemperatureChartCard(
                 height = 140.dp,
                 formatYLabel = { "%.1f°".format(it / 10.0) },
             )
+            Spacer(Modifier.height(4.dp))
+            if (period == HistoryPeriod.DAY) {
+                XAxisTimeRow()
+            } else {
+                XAxisDateRow(chartSlots.map { it.epochDay })
+            }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 StatMiniBox("Min", "%.1f °C".format(sorted.minOf { it.bodyCelsius }), TempAmber, Modifier.weight(1f))
@@ -1537,17 +2101,39 @@ fun TemperatureChartCard(
 
 /**
  * Body Battery Card (`QBodyBatteryBarChartView.smali`):
- * - Daily 24-hour / Weekly / Monthly sky-blue (`#1296DB`) bar chart on a 0..100 scale with
- *   Peak, Charged (+Y), and Consumed (-X) summary metrics.
+ * - Daily 24-hour / Weekly 7-day / Monthly 30-day sky-blue (`#1296DB`) bar chart on a 0..100 scale
+ *   with Peak, Charged (+Y), and Consumed (-X) summary metrics.
  */
 @Composable
 fun BodyBatteryChartCard(
     points: List<BodyBatteryPoint>,
     period: HistoryPeriod = HistoryPeriod.DAY,
+    anchorEpochDay: Long = LocalDate.now().toEpochDay(),
     modifier: Modifier = Modifier,
 ) {
     val sorted = remember(points) { points.sortedBy { it.epochHour } }
-    var selectedIdx by remember(sorted) { mutableIntStateOf(sorted.lastIndex.coerceAtLeast(0)) }
+    val chartSlots = remember(sorted, period, anchorEpochDay) {
+        buildPeriodSlots(
+            period = period,
+            anchorEpochDay = anchorEpochDay,
+            items = sorted,
+            extractEpochMs = { it.epochHour * 3_600_000L },
+            aggregate = { list -> list.maxOf { it.score } },
+            formatDetail = { list ->
+                if (period == HistoryPeriod.DAY) {
+                    "${list.last().score} / 100"
+                } else {
+                    val peak = list.maxOf { it.score }
+                    val low = list.minOf { it.score }
+                    "$peak / 100 peak  (low $low)"
+                }
+            },
+        )
+    }
+    var selectedIdx by remember(chartSlots) {
+        val lastNonZero = chartSlots.indexOfLast { it.value > 0 }
+        mutableIntStateOf(if (lastNonZero >= 0) lastNonZero else chartSlots.lastIndex.coerceAtLeast(0))
+    }
 
     ChartCard(
         title = "Body Battery",
@@ -1558,31 +2144,24 @@ fun BodyBatteryChartCard(
         if (sorted.isEmpty()) {
             EmptyChartText()
         } else {
-            val selected = sorted.getOrNull(selectedIdx) ?: sorted.last()
-            val selectedMs = selected.epochHour * 3_600_000L
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Column {
-                    Text(
-                        text = "${selected.score} / 100",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = BodyBatteryBlue,
-                    )
-                    Text(
-                        text = "${formatEpochDate(selectedMs)} ${formatEpochTime(selectedMs)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            val selSlot = chartSlots.getOrNull(selectedIdx)
+            Column {
+                Text(
+                    text = if (selSlot != null && selSlot.value > 0) selSlot.detailText else "No data",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (selSlot != null && selSlot.value > 0) BodyBatteryBlue else BodyBatteryBlue.copy(alpha = 0.6f),
+                )
+                Text(
+                    text = selSlot?.labelText ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(Modifier.height(8.dp))
 
             InteractiveBarChart(
-                values = sorted.map { it.score },
+                values = chartSlots.map { it.value },
                 selectedIndex = selectedIdx,
                 onSelectIndex = { selectedIdx = it },
                 barColor = BodyBatteryBlue,
@@ -1590,6 +2169,12 @@ fun BodyBatteryChartCard(
                 height = 145.dp,
                 formatYLabel = { it.toString() },
             )
+            Spacer(Modifier.height(4.dp))
+            if (period == HistoryPeriod.DAY) {
+                XAxisTimeRow()
+            } else {
+                XAxisDateRow(chartSlots.map { it.epochDay })
+            }
 
             Spacer(Modifier.height(10.dp))
             var charged = 0
@@ -1603,6 +2188,98 @@ fun BodyBatteryChartCard(
                 StatMiniBox("Charged", "+$charged", DistanceGreen, Modifier.weight(1f))
                 StatMiniBox("Consumed", "-$consumed", CalorieCrimson, Modifier.weight(1f))
             }
+        }
+    }
+}
+
+private data class ChartSlot(
+    val epochDay: Long,
+    val value: Int,
+    val labelText: String,
+    val detailText: String,
+)
+
+/**
+ * Builds either 24 hourly slots (`00:00`..`23:00`) for [HistoryPeriod.DAY] or 7 / 30 daily
+ * calendar slots (`anchorEpochDay - (days - 1) .. anchorEpochDay`) for [HistoryPeriod.WEEK]
+ * and [HistoryPeriod.MONTH].
+ */
+private fun <T> buildPeriodSlots(
+    period: HistoryPeriod,
+    anchorEpochDay: Long,
+    items: List<T>,
+    extractEpochMs: (T) -> Long,
+    aggregate: (List<T>) -> Int,
+    formatDetail: (List<T>) -> String,
+): List<ChartSlot> {
+    val zone = ZoneId.systemDefault()
+    if (period == HistoryPeriod.DAY) {
+        val byHour = items
+            .filter { epochMsToLocalEpochDay(extractEpochMs(it)) == anchorEpochDay }
+            .groupBy { Instant.ofEpochMilli(extractEpochMs(it)).atZone(zone).hour }
+        val dateStr = formatEpochDay(anchorEpochDay)
+        return (0 until 24).map { hour ->
+            val bucket = byHour[hour].orEmpty()
+            val hh = "%02d:00".format(hour)
+            ChartSlot(
+                epochDay = anchorEpochDay,
+                value = if (bucket.isEmpty()) 0 else aggregate(bucket),
+                labelText = "$dateStr $hh",
+                detailText = if (bucket.isEmpty()) "" else formatDetail(bucket),
+            )
+        }
+    } else {
+        val count = period.days
+        val startDay = anchorEpochDay - (count - 1)
+        val byDay = items.groupBy { epochMsToLocalEpochDay(extractEpochMs(it)) }
+        return (0 until count).map { idx ->
+            val day = startDay + idx
+            val bucket = byDay[day].orEmpty()
+            ChartSlot(
+                epochDay = day,
+                value = if (bucket.isEmpty()) 0 else aggregate(bucket),
+                labelText = formatEpochDay(day),
+                detailText = if (bucket.isEmpty()) "" else formatDetail(bucket),
+            )
+        }
+    }
+}
+
+private fun <T> nearestSampleIndexForFraction(
+    samples: List<T>,
+    dayStartMs: Long,
+    dayDurationMs: Float,
+    targetFraction: Float,
+    extractEpochMs: (T) -> Long,
+): Int {
+    var bestIdx = 0
+    var bestDist = Float.MAX_VALUE
+    for (i in samples.indices) {
+        val frac = ((extractEpochMs(samples[i]) - dayStartMs) / dayDurationMs).coerceIn(0f, 1f)
+        val dist = kotlin.math.abs(frac - targetFraction)
+        if (dist < bestDist) {
+            bestDist = dist
+            bestIdx = i
+        }
+    }
+    return bestIdx
+}
+
+private fun epochMsToLocalEpochDay(epochMs: Long): Long =
+    Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay()
+
+@Composable
+private fun XAxisTimeRow() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        listOf("00:00", "06:00", "12:00", "18:00", "24:00").forEach { label ->
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
