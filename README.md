@@ -29,6 +29,7 @@ Aro automatically detects the ring's BLE protocol from its GATT services when co
 |---|---|---|---|
 | **Oudmon / QRing** | `R01`, `R02`, `R03` (tested on `R03_A807`), `R04`, `R05`, `R06`, `R11`, `VK-5098`, `MERLIN`, `Hello Ring`, `RING1`, `boAtring`, `Y25`, `H59`, `DS1314`, `DS520`, `DS12` | `6e40fff0-...` (`6e400002` TX / `6e400003` RX) + `de5bf728-...` (`de5bf72a` / `de5bf729` big-data) | 16-byte additive-checksum command frames + `0xBC` CRC-16/MODBUS big-data frames |
 | **JRing / Dialog** | `SMART_RING` (tested on Dialog/Renesas DA1458x), `JRing` | `000056ff-...` (`000033f3` TX / `000033f4` RX) + standard Battery `0x180F` (`0x2A19`) | Fixed 20-byte frames (`[cmd, 19 payload bytes]`, no checksum) |
+| **Samsung Galaxy Ring** | `Galaxy Ring (XXXX)`, `SM-Q500`, `SM-Q508`, `SM-Q509` ([RFC-SGR-001](https://github.com/TheVellichor/SamsungOpenRing/blob/master/docs/RFC-SGR-001-Samsung-Galaxy-Ring-Protocol.md)) | Samsung DATA `00001b1b-...` (`63e30bad` TX / `797ae4e9` RX) + standard BLE Heart Rate `0x180D` (`0x2A37`) | 2-byte doubled channel envelope (`[ch, ch]`) + SAP fixed/variable TLV messages (Channel 10 Health, Channel 11 Settings/Battery/Wearing) |
 
 Multiple rings can be bound simultaneously (**Settings → Add ring**), with one
 active ring connected at a time, one-tap switching between rings, and per-ring
@@ -38,22 +39,27 @@ screen as unavailable for that ring).
 ## Features
 
 - **Activity & Steps**: Concentric daily activity rings (steps, calories, distance),
-  step history sync (`0x48` + `0x43` fallback on Oudmon; `0x10`/`0x03` on JRing),
-  multi-ring daily step summation when switching rings during the day, and live
-  `0x73` push updates while connected.
+  step history sync (`0x48` + `0x43` fallback on Oudmon; `0x10`/`0x03` on JRing;
+  Channel 10 `PEDO_STEP_COUNT` on Samsung Galaxy Ring), multi-ring daily step
+  summation when switching rings during the day, and live `0x73` push updates while
+  connected.
 - **Live Streaming Heart Rate, Blood Pressure & SpO2**: Two-phase on-demand
   measurement (optical PPG acquisition followed by a 15-second live stream with
   pulsing **LIVE** indicator, real-time sparkline, in-place Home card updates,
-  and early **Save & Stop**), plus periodic history sync (`0x15` / `0x16` HR,
-  `0x0D` / `0x14` BP, `0xBC 0x2A` SpO2).
+  and early **Save & Stop**), standard BLE Heart Rate (`0x180D`/`0x2A37`) streaming
+  and Channel 10 on-demand HR/SpO2 on Samsung Galaxy Ring, plus periodic history sync
+  (`0x15` / `0x16` HR, `0x0D` / `0x14` BP, `0xBC 0x2A` SpO2).
 - **Sleep & Stages**: Full overnight hypnogram and stage breakdown (**Deep**,
   **Light**, **REM**, **Awake**) anchored to local wall-clock midnight via
-  Oudmon's `0xBC 0x27` new sleep protocol and `0x44` fallback.
+  Oudmon's `0xBC 0x27` new sleep protocol, `0x44` fallback, and Samsung Channel 10
+  sleep records.
 - **Skin & Body Temperature (°C)**: Live dual-channel thermistor measurement
-  (`0x37`/`0x38`) on rings equipped with a temperature sensor.
-- **Stress (1–100) & Body Battery (5–100)**: On-device derived wellness metrics
-  for both ring families — hourly charging during sleep and draining with waking
-  HR/activity load (clearly labeled as derived wellness metrics, not clinical vitals).
+  (`0x37`/`0x38` on JRing) and Channel 10/11 skin temperature (`0x0B 0x05` / Param 165
+  on Samsung Galaxy Ring).
+- **Stress (1–100) & Body Battery (5–100)**: On-device derived and Channel 10
+  wellness metrics across all three ring families — hourly charging during sleep and
+  draining with waking HR/activity load (clearly labeled as derived wellness metrics,
+  not clinical vitals).
 - **Interactive History Charts & Per-Ring Filter**: Daily, Weekly, and Monthly
   plots for every metric with touch scrubbing, date navigation, tap-to-jump from
   any Home card, and a top **Ring source** dropdown to view any individual ring
@@ -93,8 +99,9 @@ Single Gradle module with package-enforced boundaries:
 com.kschulz.aro/
   data/ble/            RingBleTransport (GATT), RingCommandClient, RingProtocol,
                        RingFeatureSupport, RingProtocolCodec (Oudmon 16B + 0xBC),
-                       JRingProtocol (20B), GattUuids, Opcodes, Crc16, SumCheck,
-                       ByteOrder, RingPayloads, RingScanner
+                       JRingProtocol (20B), SamsungRingProtocol (SAP CH10/CH11 + 0x180D),
+                       GattUuids, Opcodes, Crc16, SumCheck, ByteOrder, RingPayloads,
+                       RingScanner
   data/model/          Room v6 entities (with ringMac tagging): Profile, Ring,
                        StepDay, SleepSession, SleepSegment, HeartRateSample,
                        BloodPressure, Spo2Sample, TemperatureSample, StressSample,

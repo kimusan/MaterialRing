@@ -77,6 +77,15 @@ class RingCommandClient @Inject constructor(
     private val _featureSupport = MutableStateFlow(RingFeatureSupport.defaultsFor(transport.activeProtocol.value))
     val featureSupport: StateFlow<RingFeatureSupport> = _featureSupport.asStateFlow()
 
+    private val _wearingState = MutableStateFlow<Boolean?>(null)
+    val wearingState: StateFlow<Boolean?> = _wearingState.asStateFlow()
+
+    private val _samsungHealthPackets = MutableSharedFlow<ByteArray>(
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val samsungHealthPackets: SharedFlow<ByteArray> = _samsungHealthPackets.asSharedFlow()
+
     private var largeDataBuffer: ByteArray? = null
     private var largeDataExpectedLen: Int = 0
 
@@ -84,6 +93,26 @@ class RingCommandClient @Inject constructor(
         scope.launch {
             transport.activeProtocol.collect { proto ->
                 _featureSupport.value = RingFeatureSupport.defaultsFor(proto)
+            }
+        }
+        scope.launch {
+            transport.standardHeartRateNotifies.collect { raw ->
+                val offFinger = SamsungRingProtocol.isStandardHrOffFinger(raw)
+                val bpm = SamsungRingProtocol.parseStandardHeartRateMeasurement(raw) ?: return@collect
+                if (offFinger) {
+                    _wearingState.value = false
+                    _realTimeHeartRate.value = 0
+                } else if (bpm in 30..240) {
+                    _wearingState.value = true
+                    _realTimeHeartRate.value = bpm
+                    _liveMeasurements.tryEmit(
+                        RingPayloads.LiveMeasurementPacket(
+                            type = RingPayloads.MEASURE_TYPE_HEART_RATE,
+                            errCode = 0,
+                            value = bpm,
+                        ),
+                    )
+                }
             }
         }
         scope.launch {
@@ -97,6 +126,12 @@ class RingCommandClient @Inject constructor(
                     )
                     AroDbg.d("jring rx cmd=0x${parsed.cmd.toString(16)} ${AroDbg.hex(raw)}")
                     routeJRing(parsed)
+                    return@collect
+                }
+                if (activeProtocol == RingProtocol.SAMSUNG) {
+                    if (raw.isEmpty()) return@collect
+                    AroDbg.d("samsung rx ${raw.size}B ${AroDbg.hex(raw)}")
+                    routeSamsung(raw)
                     return@collect
                 }
                 val fullFrame = reassembleIfLargeData(raw) ?: return@collect
@@ -113,6 +148,7 @@ class RingCommandClient @Inject constructor(
             transport.connectionState.collect { state ->
                 if (state != ConnectionState.CONNECTED) {
                     _realTimeHeartRate.value = 0
+                    _wearingState.value = null
                     largeDataBuffer = null
                     largeDataExpectedLen = 0
                     if (state == ConnectionState.DISCONNECTED) {
@@ -157,23 +193,29 @@ class RingCommandClient @Inject constructor(
         return raw
     }
 
-    private fun encodeFrame(cmd: Int, payload: ByteArray?): Frame =
-        if (activeProtocol == RingProtocol.JRING) {
-            JRingProtocol.buildFrame(cmd, payload)
-        } else {
-            codec.encode(cmd, payload)
-        }
+    private fun encodeFrame(cmd: Int, payload: ByteArray?): Frame = when (activeProtocol) {
+        RingProtocol.JRING -> JRingProtocol.buildFrame(cmd, payload)
+        RingProtocol.SAMSUNG -> SamsungRingProtocol.buildFrameFromCommandKey(cmd, payload)
+        RingProtocol.OUDMON -> codec.encode(cmd, payload)
+    }
 
-    /** Refresh battery level for either protocol (0x03 on Oudmon, 0x2A19 on JRing). */
+    /** Refresh battery level for any supported protocol (0x03 on Oudmon, 0x2A19 on JRing, CH11 0x03 on Samsung). */
     suspend fun refreshBattery(): Int? {
         if (!transport.isConnected) return null
-        return if (activeProtocol == RingProtocol.JRING) {
-            val pct = transport.readStandardBatteryLevel()
-            if (pct != null) _batteryLevel.value = pct
-            pct
-        } else {
-            request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
-            _batteryLevel.value.takeIf { it in 0..100 }
+        return when (activeProtocol) {
+            RingProtocol.JRING -> {
+                val pct = transport.readStandardBatteryLevel()
+                if (pct != null) _batteryLevel.value = pct
+                pct
+            }
+            RingProtocol.SAMSUNG -> {
+                transport.write(SamsungRingProtocol.buildBatterySyncFrame())
+                _batteryLevel.value.takeIf { it in 0..100 }
+            }
+            RingProtocol.OUDMON -> {
+                request(Opcodes.GET_DEVICE_ELECTRICITY_VALUE)
+                _batteryLevel.value.takeIf { it in 0..100 }
+            }
         }
     }
 
@@ -289,6 +331,90 @@ class RingCommandClient @Inject constructor(
         }
         val list = synchronized(lock) { waiters[parsed.cmd]?.toList() } ?: return
         for (channel in list) channel.trySend(parsed)
+    }
+
+    private fun routeSamsung(raw: ByteArray) {
+        SamsungRingProtocol.parseBatteryInfo(raw)?.let { bat ->
+            _batteryLevel.value = bat.level
+        }
+        SamsungRingProtocol.parseWearingState(raw)?.let { onFinger ->
+            _wearingState.value = onFinger
+            if (!onFinger) {
+                _realTimeHeartRate.value = 0
+                _liveMeasurements.tryEmit(
+                    RingPayloads.LiveMeasurementPacket(
+                        type = 0,
+                        errCode = 1, // wearing error
+                        value = 0,
+                    ),
+                )
+            }
+        }
+        val pkt = SamsungRingProtocol.decodeSapPacket(raw) ?: return
+        if (pkt.channel == SamsungRingProtocol.CHANNEL_SETTINGS &&
+            pkt.msgId == SamsungRingProtocol.SETTINGS_MSG_RING_TEMPERATURE_INFO
+        ) {
+            val rawTemp = pkt.params[SamsungRingProtocol.PARAM_SKIN_TEMPERATURE]
+                ?: pkt.params.values.firstOrNull()
+            val celsius = rawTemp?.let { SamsungRingProtocol.normalizeTemperatureCelsius(it) }
+            if (celsius != null) {
+                _liveTemperatures.tryEmit(
+                    JRingProtocol.TemperatureReading(surfaceCelsius = celsius, bodyCelsius = celsius),
+                )
+            }
+        } else if (pkt.channel == SamsungRingProtocol.CHANNEL_HEALTH) {
+            _samsungHealthPackets.tryEmit(raw)
+            val hr = pkt.params[SamsungRingProtocol.PARAM_HR_ACTUAL]?.toInt()
+                ?: pkt.params[SamsungRingProtocol.PARAM_SPO2_CONCURRENT_HR]?.toInt()
+            if (hr != null && hr in 30..240) {
+                _realTimeHeartRate.value = hr
+                _liveMeasurements.tryEmit(
+                    RingPayloads.LiveMeasurementPacket(
+                        type = RingPayloads.MEASURE_TYPE_HEART_RATE,
+                        errCode = 0,
+                        value = hr,
+                    ),
+                )
+            }
+            val spo2 = pkt.params[SamsungRingProtocol.PARAM_SPO2_PERCENT]?.toInt()
+            if (spo2 != null && spo2 in 50..100) {
+                _liveMeasurements.tryEmit(
+                    RingPayloads.LiveMeasurementPacket(
+                        type = RingPayloads.MEASURE_TYPE_SPO2,
+                        errCode = 0,
+                        value = spo2,
+                    ),
+                )
+            }
+            val rawTemp = pkt.params[SamsungRingProtocol.PARAM_SKIN_TEMPERATURE]
+            val celsius = rawTemp?.let { SamsungRingProtocol.normalizeTemperatureCelsius(it) }
+            if (celsius != null) {
+                _liveTemperatures.tryEmit(
+                    JRingProtocol.TemperatureReading(surfaceCelsius = celsius, bodyCelsius = celsius),
+                )
+            }
+        }
+
+        val key = SamsungRingProtocol.commandKey(pkt.channel, pkt.msgId)
+        val parsed = ParsedFrame(cmd = key, error = false, payload = raw)
+        val keysToNotify = if (
+            pkt.channel == SamsungRingProtocol.CHANNEL_SETTINGS &&
+            pkt.msgId == SamsungRingProtocol.SETTINGS_MSG_BATTERY_INFO
+        ) {
+            listOf(
+                key,
+                SamsungRingProtocol.commandKey(
+                    SamsungRingProtocol.CHANNEL_SETTINGS,
+                    SamsungRingProtocol.SETTINGS_MSG_SEND_BATTERY_SYNC,
+                ),
+            )
+        } else {
+            listOf(key)
+        }
+        for (k in keysToNotify) {
+            val list = synchronized(lock) { waiters[k]?.toList() } ?: continue
+            for (channel in list) channel.trySend(parsed)
+        }
     }
 
     private fun route(parsed: ParsedFrame) {

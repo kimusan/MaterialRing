@@ -56,6 +56,13 @@ class SyncEngine @Inject constructor(
                 hrIntervalMinutes = hrIntervalMinutes,
             )
         }
+        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.SAMSUNG) {
+            return syncSamsung(
+                profileId = profileId,
+                time = time,
+                hrIntervalMinutes = hrIntervalMinutes,
+            )
+        }
 
         // The vendor's post-bind init chain sends SET_DEVICE_TIME (0x01) first, before any
         // data query; the ring answers history pulls only once it has a clock. Do the same
@@ -176,6 +183,12 @@ class SyncEngine @Inject constructor(
         spo2IntervalMinutes: Int = 60,
     ) {
         if (!command.isConnected) return
+        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.SAMSUNG ||
+            command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING
+        ) {
+            applyMonitoringIntervals(hrIntervalMinutes, bpIntervalMinutes, spo2IntervalMinutes)
+            return
+        }
         val currentYear = time.localClock().year
         val timeSettingPayload = RingPayloads.buildTimeSettingPayload(
             gender = profile.gender,
@@ -222,6 +235,23 @@ class SyncEngine @Inject constructor(
             )
             return
         }
+        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.SAMSUNG) {
+            val frame = com.kschulz.aro.data.ble.SamsungRingProtocol.buildHealthMonitoringSettingsFrame(
+                hrIntervalMinutes = hrIntervalMinutes,
+                enableSkinTemperature = true,
+                enableStress = true,
+                enableSleepTracking = true,
+            )
+            command.request(
+                cmd = com.kschulz.aro.data.ble.SamsungRingProtocol.commandKey(
+                    com.kschulz.aro.data.ble.SamsungRingProtocol.CHANNEL_SETTINGS,
+                    com.kschulz.aro.data.ble.SamsungRingProtocol.SETTINGS_MSG_FULL_SETTING_INFO,
+                ),
+                payload = frame.bytes.copyOfRange(3, frame.bytes.size),
+                timeoutMs = 800L,
+            )
+            return
+        }
 
         val autoHrSwitch = RingPayloads.buildAutoHrSwitchPayload(
             enabled = hrIntervalMinutes > 0,
@@ -240,6 +270,120 @@ class SyncEngine @Inject constructor(
             intervalMinutes = spo2IntervalMinutes.coerceAtLeast(30),
         )
         command.request(Opcodes.AUTO_SPO2_SETTING, autoSpo2Switch)
+    }
+
+    /**
+     * Sync path for Samsung Galaxy Ring (SM-Q500 / SM-Q508 / SM-Q509, RFC-SGR-001).
+     * Synchronizes RTC clock (CH11 MSG 0), battery info (CH11 MSG 3 -> MSG 2), ring temperature
+     * (CH11 MSG 5), health monitoring settings (CH11 MSG 32), and requests health records across
+     * Channel 10 feature types: Steps (7), Heart Rate (10), Sleep (16/17/18), Stress (19),
+     * Skin Temperature (225), and SpO2 (226).
+     */
+    private suspend fun syncSamsung(
+        profileId: Long,
+        time: TimeSource,
+        hrIntervalMinutes: Int,
+    ): SyncResult {
+        val nowMs = time.nowMillis()
+        val today = time.todayEpochDay()
+        val sgr = com.kschulz.aro.data.ble.SamsungRingProtocol
+
+        // 1. Send RTC time synchronization (Channel 11, MSG_RTC_INFO_SET = 0, RFC-SGR-001 §10.4).
+        val rtcFrame = sgr.buildRtcSyncFrame(nowMs)
+        command.request(
+            cmd = sgr.commandKey(sgr.CHANNEL_SETTINGS, sgr.SETTINGS_MSG_RTC_INFO_SET),
+            payload = rtcFrame.bytes.copyOfRange(3, rtcFrame.bytes.size),
+            timeoutMs = 500L,
+        )
+
+        // 2. Request battery report (Channel 11, MSG_SEND_BATTERY_SYNC = 3 -> response MSG 2, RFC-SGR-001 §10.3).
+        command.request(
+            cmd = sgr.commandKey(sgr.CHANNEL_SETTINGS, sgr.SETTINGS_MSG_SEND_BATTERY_SYNC),
+            payload = null,
+            timeoutMs = 500L,
+        )
+
+        // 3. Apply health monitoring settings (Channel 11, MSG_FULL_SETTING_INFO = 32, RFC-SGR-001 §9.11).
+        applyMonitoringIntervals(hrIntervalMinutes, 0, 60)
+
+        var stepsCount = 0
+        var hrCount = 0
+        var spo2Count = 0
+        var sleepCount = 0
+
+        // 4. Query Channel 11 ring temperature (MSG_RING_TEMPERATURE_INFO = 5, RFC-SGR-001 §10.2).
+        command.request(
+            cmd = sgr.commandKey(sgr.CHANNEL_SETTINGS, sgr.SETTINGS_MSG_RING_TEMPERATURE_INFO),
+            payload = null,
+            timeoutMs = 600L,
+        )?.let { rsp ->
+            sgr.parseTemperatureFrame(profileId, nowMs, rsp.payload)?.let { temp ->
+                health.upsertTemperature(profileId, listOf(temp))
+            }
+        }
+
+        // 5. Request health data records on Channel 10 (MSG_ID = 3 -> response 0x43, RFC-SGR-001 §9.2–§9.3).
+        val featureTypes = listOf(
+            sgr.FEATURE_PEDO_STEP_COUNT,
+            sgr.FEATURE_HEART_RATE,
+            sgr.FEATURE_SLEEP,
+            sgr.FEATURE_STRESS,
+            sgr.FEATURE_SKIN_TEMPERATURE,
+            sgr.FEATURE_OXYGEN_SATURATION,
+        )
+        for (feature in featureTypes) {
+            val reqBody = byteArrayOf(0x01, (feature and 0xFF).toByte())
+            val frames = command.collectUntil(
+                cmd = sgr.commandKey(sgr.CHANNEL_HEALTH, sgr.HEALTH_MSG_REQUEST_DATA),
+                payload = reqBody,
+                shouldStop = { false },
+                maxPackets = 8,
+                timeoutMs = 500L,
+            )
+            for (frame in frames) {
+                val batch = sgr.parseHealthPacket(profileId, today, nowMs, frame.payload)
+                if (batch.steps.isNotEmpty()) {
+                    health.upsertSteps(profileId, batch.steps)
+                    stepsCount += batch.steps.size
+                }
+                if (batch.heartRates.isNotEmpty()) {
+                    health.upsertHeartRate(profileId, batch.heartRates)
+                    health.upsertStress(profileId, deriveStressFromHr(profileId, batch.heartRates))
+                    hrCount += batch.heartRates.size
+                }
+                if (batch.spo2Samples.isNotEmpty()) {
+                    health.upsertSpo2(profileId, batch.spo2Samples)
+                    spo2Count += batch.spo2Samples.size
+                }
+                if (batch.temperatures.isNotEmpty()) {
+                    health.upsertTemperature(profileId, batch.temperatures)
+                }
+                if (batch.stressSamples.isNotEmpty()) {
+                    health.upsertStress(profileId, batch.stressSamples)
+                }
+                for ((session, segments) in batch.sleepSessions) {
+                    health.upsertSleep(profileId, session, segments)
+                    sleepCount += 1
+                }
+            }
+        }
+
+        // 6. Recompute Body Battery up to current hour.
+        val windowStartHour = time.epochDayForOffset(6) * 24
+        val nowHour = nowMs / 3_600_000L
+        val windowEndHour = minOf(today * 24 + 23, nowHour)
+        runCatching { bodyBattery.recompute(profileId, windowStartHour, windowEndHour) }
+
+        AroDbg.d("samsung sync done: steps=$stepsCount hr=$hrCount spo2=$spo2Count sleep=$sleepCount")
+        return SyncResult(
+            connected = true,
+            daysSynced = 1,
+            steps = stepsCount,
+            hrSamples = hrCount,
+            spo2Samples = spo2Count,
+            sleepSessions = sleepCount,
+            distributionCleared = true,
+        )
     }
 
     /**

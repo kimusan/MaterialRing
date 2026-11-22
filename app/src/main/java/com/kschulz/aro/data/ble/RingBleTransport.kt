@@ -70,6 +70,13 @@ class RingBleTransport @Inject constructor(
     )
     val notifies: SharedFlow<ByteArray> = _notifies.asSharedFlow()
 
+    // Standard BLE service notifications (e.g. 0x180D / 0x2A37 Heart Rate Measurement on Samsung Galaxy Ring).
+    private val _standardHeartRateNotifies = MutableSharedFlow<ByteArray>(
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val standardHeartRateNotifies: SharedFlow<ByteArray> = _standardHeartRateNotifies.asSharedFlow()
+
     private class WriteRequest(val frame: Frame, val result: CompletableDeferred<Boolean>)
     private class ReadRequest(val result: CompletableDeferred<ByteArray>)
 
@@ -160,16 +167,23 @@ class RingBleTransport @Inject constructor(
 
     /**
      * Read HW and FW revision strings from the DEVICE_INFO service.
-     * @return (hw, fw), or null when not connected or either read fails.
+     * On Samsung Galaxy Ring (`0x180A` exposes only Manufacturer Name `0x2A29`, RFC-SGR-001 §4.1),
+     * falls back to `(manufacturer, "SAP / SM-Q509")`.
+     * @return (hw, fw), or null when not connected or reads fail.
      */
     suspend fun readDeviceInfo(): Pair<String, String>? {
         val g = synchronized(gattLock) { gatt } ?: return null
         val service = synchronized(gattLock) { g.getService(GattUuids.DEVICE_INFO_SERVICE) } ?: return null
-        val fwChar = service.getCharacteristic(GattUuids.FIRMWARE_REVISION) ?: return null
-        val hwChar = service.getCharacteristic(GattUuids.HARDWARE_REVISION) ?: return null
-        val fw = readCharacteristic(fwChar) ?: return null
-        val hw = readCharacteristic(hwChar) ?: return null
-        return hw to fw
+        val fwChar = service.getCharacteristic(GattUuids.FIRMWARE_REVISION)
+        val hwChar = service.getCharacteristic(GattUuids.HARDWARE_REVISION)
+        if (fwChar != null && hwChar != null) {
+            val fw = readCharacteristic(fwChar) ?: return null
+            val hw = readCharacteristic(hwChar) ?: return null
+            return hw to fw
+        }
+        val mfgChar = service.getCharacteristic(GattUuids.MANUFACTURER_NAME) ?: return null
+        val mfg = readCharacteristic(mfgChar) ?: return null
+        return mfg to "Galaxy Ring (SM-Q50x)"
     }
 
     /** Read standard BLE Battery Service (0x180F / 0x2A19) level 0..100, used by SMART_RING / JRing. */
@@ -368,6 +382,8 @@ class RingBleTransport @Inject constructor(
             val cmdService = g.getService(GattUuids.COMMAND_SERVICE)
             val serialService = g.getService(GattUuids.SERIAL_PORT_SERVICE)
             val jringService = g.getService(GattUuids.JRING_SERVICE)
+            val samsungService = g.getService(GattUuids.SAMSUNG_DATA_SERVICE)
+            val heartRateService = g.getService(GattUuids.HEART_RATE_SERVICE)
 
             val detectedProtocol: RingProtocol
             val wChar: BluetoothGattCharacteristic?
@@ -397,6 +413,20 @@ class RingBleTransport @Inject constructor(
                 nChar = jringService.getCharacteristic(GattUuids.JRING_NOTIFY_CHARACTERISTIC)
                 secWrite = null
                 secNotify = null
+            } else if (samsungService != null) {
+                detectedProtocol = RingProtocol.SAMSUNG
+                // RFC-SGR-001 §4.2 & Appendix B.2: select write char by Write-Without-Response property
+                // (or UUID 63e30bad-...) and notify char by Notify property (or UUID 797ae4e9-...).
+                wChar = samsungService.characteristics?.firstOrNull {
+                    (it.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+                } ?: samsungService.getCharacteristic(GattUuids.SAMSUNG_WRITE_CHARACTERISTIC)
+                nChar = samsungService.characteristics?.firstOrNull {
+                    (it.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
+                } ?: samsungService.getCharacteristic(GattUuids.SAMSUNG_NOTIFY_CHARACTERISTIC)
+                secWrite = null
+                // Subscribe to standard BLE Heart Rate Service (0x180D / 0x2A37) as secondary notify
+                secNotify = heartRateService?.getCharacteristic(GattUuids.HEART_RATE_MEASUREMENT_CHARACTERISTIC)
+                runCatching { g.requestMtu(SamsungRingProtocol.REQUIRED_MTU) }
             } else {
                 detectedProtocol = RingProtocol.OUDMON
                 wChar = null
@@ -416,7 +446,8 @@ class RingBleTransport @Inject constructor(
             AroDbg.d(
                 "protocol=$detectedProtocol cmdService=${cmdService != null} " +
                     "serialService=${serialService != null} jringService=${jringService != null} " +
-                    "writeChar=${wChar?.uuid} notifyChar=${nChar?.uuid}",
+                    "samsungService=${samsungService != null} " +
+                    "writeChar=${wChar?.uuid} notifyChar=${nChar?.uuid} secNotify=${secNotify?.uuid}",
             )
             if (wChar == null || nChar == null) {
                 disconnect()
@@ -485,12 +516,18 @@ class RingBleTransport @Inject constructor(
             synchronized(gattLock) {
                 if (g !== gatt) return
             }
-            if (characteristic.uuid == GattUuids.COMMAND_NOTIFY_CHARACTERISTIC ||
-                characteristic.uuid == GattUuids.NOTIFICATION_CHARACTERISTIC ||
-                characteristic.uuid == GattUuids.JRING_NOTIFY_CHARACTERISTIC
-            ) {
-                AroDbg.d("notify ${value.size}B ${AroDbg.hex(value)}")
-                _notifies.tryEmit(value)
+            when (characteristic.uuid) {
+                GattUuids.COMMAND_NOTIFY_CHARACTERISTIC,
+                GattUuids.NOTIFICATION_CHARACTERISTIC,
+                GattUuids.JRING_NOTIFY_CHARACTERISTIC,
+                GattUuids.SAMSUNG_NOTIFY_CHARACTERISTIC -> {
+                    AroDbg.d("notify ${value.size}B ${AroDbg.hex(value)}")
+                    _notifies.tryEmit(value)
+                }
+                GattUuids.HEART_RATE_MEASUREMENT_CHARACTERISTIC -> {
+                    AroDbg.d("notify HR(0x2A37) ${value.size}B ${AroDbg.hex(value)}")
+                    _standardHeartRateNotifies.tryEmit(value)
+                }
             }
         }
     }

@@ -194,6 +194,27 @@ class HomeViewModel @Inject constructor(
                 com.kschulz.aro.widget.AroWidgets.updateAll(context)
             }
         }
+        // Ingest unsolicited Samsung Galaxy Ring Channel 10 health notifications in real time.
+        viewModelScope.launch {
+            command.samsungHealthPackets.collect { raw ->
+                val profileId = settings.observeActiveProfileId().first()
+                if (profileId == SettingsRepository.NO_PROFILE) return@collect
+                val batch = com.kschulz.aro.data.ble.SamsungRingProtocol.parseHealthPacket(
+                    profileId = profileId,
+                    todayEpochDay = time.todayEpochDay(),
+                    nowEpochMs = time.nowMillis(),
+                    raw = raw,
+                )
+                if (batch.steps.isNotEmpty()) health.upsertSteps(profileId, batch.steps)
+                if (batch.heartRates.isNotEmpty()) health.upsertHeartRate(profileId, batch.heartRates)
+                if (batch.spo2Samples.isNotEmpty()) health.upsertSpo2(profileId, batch.spo2Samples)
+                if (batch.temperatures.isNotEmpty()) health.upsertTemperature(profileId, batch.temperatures)
+                if (batch.stressSamples.isNotEmpty()) health.upsertStress(profileId, batch.stressSamples)
+                for ((session, segments) in batch.sleepSessions) {
+                    health.upsertSleep(profileId, session, segments)
+                }
+            }
+        }
     }
 
     /** First-run guard: create a default profile and activate it when none exist, so the
@@ -248,7 +269,7 @@ class HomeViewModel @Inject constructor(
         startLiveMeasurement(RingPayloads.MEASURE_TYPE_SPO2)
     }
 
-    /** Live dual-thermistor temperature measurement for SMART_RING / JRing (0x37 start/stop, 0x38 result). */
+    /** Live skin/body temperature measurement for SMART_RING / JRing (0x37/0x38) and Samsung Galaxy Ring (CH11 MSG 5 / CH10 225). */
     fun startTemperatureMeasurement() {
         measurementJob?.cancel()
         measurementJob = viewModelScope.launch {
@@ -258,25 +279,36 @@ class HomeViewModel @Inject constructor(
                 _lastSync.value = "Ring not connected. Place ring nearby and try again."
                 return@launch
             }
-            if (!command.featureSupport.value.temperature ||
-                command.activeProtocol != com.kschulz.aro.data.ble.RingProtocol.JRING
-            ) {
+            if (!command.featureSupport.value.temperature) {
                 val ringLabel = boundRing.value?.displayName?.ifBlank { "this ring" } ?: "this ring"
                 _lastSync.value = "Temperature measurement is unavailable for $ringLabel."
                 return@launch
             }
             _lastSync.value = "Measuring temperature..."
-            command.send(
-                com.kschulz.aro.data.ble.JRingProtocol.CMD_TEMP_MODE,
-                com.kschulz.aro.data.ble.JRingProtocol.buildTemperatureModePayload(true),
-            )
+            if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.SAMSUNG) {
+                val sgr = com.kschulz.aro.data.ble.SamsungRingProtocol
+                command.send(
+                    sgr.commandKey(sgr.CHANNEL_SETTINGS, sgr.SETTINGS_MSG_RING_TEMPERATURE_INFO),
+                )
+                command.send(
+                    sgr.commandKey(sgr.CHANNEL_HEALTH, sgr.HEALTH_MSG_REQUEST_DATA),
+                    byteArrayOf(0x01, sgr.FEATURE_SKIN_TEMPERATURE.toByte()),
+                )
+            } else {
+                command.send(
+                    com.kschulz.aro.data.ble.JRingProtocol.CMD_TEMP_MODE,
+                    com.kschulz.aro.data.ble.JRingProtocol.buildTemperatureModePayload(true),
+                )
+            }
             val reading = withTimeoutOrNull(10_000L) {
                 command.liveTemperatures.first()
             }
-            command.send(
-                com.kschulz.aro.data.ble.JRingProtocol.CMD_TEMP_MODE,
-                com.kschulz.aro.data.ble.JRingProtocol.buildTemperatureModePayload(false),
-            )
+            if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
+                command.send(
+                    com.kschulz.aro.data.ble.JRingProtocol.CMD_TEMP_MODE,
+                    com.kschulz.aro.data.ble.JRingProtocol.buildTemperatureModePayload(false),
+                )
+            }
             if (reading != null) {
                 val nowMs = time.nowMillis()
                 health.upsertTemperature(
@@ -322,18 +354,34 @@ class HomeViewModel @Inject constructor(
     }
 
     private suspend fun sendStopLiveMeasurement(type: Int, value1: Int, value2: Int) {
-        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
-            command.send(
-                com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
-                com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(
-                    com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_STOP,
-                ),
-            )
-        } else {
-            command.send(
-                Opcodes.STOP_HEART_RATE,
-                RingPayloads.buildStopMeasurementPayload(type, value1, value2),
-            )
+        when (command.activeProtocol) {
+            com.kschulz.aro.data.ble.RingProtocol.JRING -> {
+                command.send(
+                    com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
+                    com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(
+                        com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_STOP,
+                    ),
+                )
+            }
+            com.kschulz.aro.data.ble.RingProtocol.SAMSUNG -> {
+                val sgr = com.kschulz.aro.data.ble.SamsungRingProtocol
+                val receiver = if (type == RingPayloads.MEASURE_TYPE_SPO2) {
+                    sgr.RECEIVER_ONDEMAND_SPO2
+                } else {
+                    sgr.RECEIVER_ONDEMAND_HEART_RATE
+                }
+                val frame = sgr.buildOnDemandMeasurementFrame(receiver, enable = false)
+                command.send(
+                    sgr.commandKey(sgr.CHANNEL_HEALTH, sgr.HEALTH_MSG_WEARABLE_EXCHANGE),
+                    frame.bytes.copyOfRange(3, frame.bytes.size),
+                )
+            }
+            com.kschulz.aro.data.ble.RingProtocol.OUDMON -> {
+                command.send(
+                    Opcodes.STOP_HEART_RATE,
+                    RingPayloads.buildStopMeasurementPayload(type, value1, value2),
+                )
+            }
         }
     }
 
@@ -456,20 +504,36 @@ class HomeViewModel @Inject constructor(
                 }
             }
 
-            if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
-                val mode = when (type) {
-                    RingPayloads.MEASURE_TYPE_SPO2 -> com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_SPO2
-                    else -> com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_BP_STRESS
+            when (command.activeProtocol) {
+                com.kschulz.aro.data.ble.RingProtocol.JRING -> {
+                    val mode = when (type) {
+                        RingPayloads.MEASURE_TYPE_SPO2 -> com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_SPO2
+                        else -> com.kschulz.aro.data.ble.JRingProtocol.OPTICAL_BP_STRESS
+                    }
+                    command.send(
+                        com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
+                        com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(mode),
+                    )
                 }
-                command.send(
-                    com.kschulz.aro.data.ble.JRingProtocol.CMD_OPTICAL_MODE,
-                    com.kschulz.aro.data.ble.JRingProtocol.buildOpticalModePayload(mode),
-                )
-            } else {
-                command.send(
-                    Opcodes.START_HEART_RATE,
-                    RingPayloads.buildStartMeasurementPayload(type),
-                )
+                com.kschulz.aro.data.ble.RingProtocol.SAMSUNG -> {
+                    val sgr = com.kschulz.aro.data.ble.SamsungRingProtocol
+                    val receiver = if (type == RingPayloads.MEASURE_TYPE_SPO2) {
+                        sgr.RECEIVER_ONDEMAND_SPO2
+                    } else {
+                        sgr.RECEIVER_ONDEMAND_HEART_RATE
+                    }
+                    val frame = sgr.buildOnDemandMeasurementFrame(receiver, enable = true)
+                    command.send(
+                        sgr.commandKey(sgr.CHANNEL_HEALTH, sgr.HEALTH_MSG_WEARABLE_EXCHANGE),
+                        frame.bytes.copyOfRange(3, frame.bytes.size),
+                    )
+                }
+                com.kschulz.aro.data.ble.RingProtocol.OUDMON -> {
+                    command.send(
+                        Opcodes.START_HEART_RATE,
+                        RingPayloads.buildStartMeasurementPayload(type),
+                    )
+                }
             }
 
             try {

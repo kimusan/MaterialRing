@@ -48,12 +48,14 @@ class RingScanner @Inject constructor(
 
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val name = result.scanRecord?.deviceName ?: result.device?.name ?: return
-            if (MODEL_PREFIXES.any { name.startsWith(it, ignoreCase = true) }) {
+            val name = result.scanRecord?.deviceName ?: result.device?.name
+            val serviceUuids = result.scanRecord?.serviceUuids?.map { it.uuid } ?: emptyList()
+            val hasSamsungService = GattUuids.SAMSUNG_DATA_SERVICE in serviceUuids
+            if ((name != null && isSupportedRingName(name)) || hasSamsungService) {
                 val device = result.device
                 _discoveries.tryEmit(
                     ScannedRing(
-                        name = name,
+                        name = name ?: "Galaxy Ring",
                         macAddress = device.address,
                         rssi = result.rssi,
                     ),
@@ -75,12 +77,29 @@ class RingScanner @Inject constructor(
 
     fun start() {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
-        val leScanner = manager.adapter?.bluetoothLeScanner ?: return
+        val adapter = manager.adapter ?: return
+        val leScanner = adapter.bluetoothLeScanner ?: return
         scanner = leScanner
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
         scope.launch {
+            // Also surface already-bonded smart rings (e.g. Samsung Galaxy Ring bonded via
+            // Galaxy Wearable / Ring Manager, which often stops advertising once bonded).
+            runCatching {
+                adapter.bondedDevices?.forEach { bonded ->
+                    val name = bonded.name ?: return@forEach
+                    if (isSupportedRingName(name)) {
+                        _discoveries.tryEmit(
+                            ScannedRing(
+                                name = name,
+                                macAddress = bonded.address,
+                                rssi = -55,
+                            ),
+                        )
+                    }
+                }
+            }
             if (_isScanning.value) {
                 runCatching { leScanner.stopScan(callback) }
             }
@@ -101,14 +120,18 @@ class RingScanner @Inject constructor(
     }
 
     companion object {
-        // Model prefixes the ring advertises with (the original app's scan list).
-        // The advertising name is "<model>_<suffix>", e.g. R03_0202, so the user's
-        // ring matches "R03".
+        // Model prefixes the ring advertises with (the original app's scan list + JRing + Samsung Galaxy Ring).
+        // The advertising name is "<model>_<suffix>", e.g. R03_0202, or "Galaxy Ring (XXXX)".
         val MODEL_PREFIXES = listOf(
             "R01", "R02", "R03", "R04", "R05", "R06", "R11",
             "VK-5098", "MERLIN", "Hello Ring", "RING1", "boAtring",
             "Y25", "H59", "DS1314", "DS520", "DS12",
             "SMART_RING", "JRing",
+            "Galaxy Ring", "SM-Q50", "Q500", "Q508", "Q509",
         )
+
+        fun isSupportedRingName(name: String): Boolean =
+            MODEL_PREFIXES.any { name.startsWith(it, ignoreCase = true) } ||
+                name.contains("Galaxy Ring", ignoreCase = true)
     }
 }

@@ -5,10 +5,12 @@ package com.kschulz.aro.data.ble
  * Auto-detected from discovered GATT services on connect:
  * - [OUDMON]: QRing / R03-series (`6e40fff0-...` + `de5bf728-...`, 16-byte + 0xBC big-data framing).
  * - [JRING]: Dialog/Renesas `SMART_RING` (`000056ff-...`, fixed 20-byte framing).
+ * - [SAMSUNG]: Samsung Galaxy Ring SM-Q50x (`00001b1b-...` SAP channel-multiplexed framing + `0x180D` BLE Heart Rate).
  */
 enum class RingProtocol {
     OUDMON,
     JRING,
+    SAMSUNG,
 }
 
 /**
@@ -44,6 +46,15 @@ data class RingFeatureSupport(
                 spo2 = true,
                 steps = true,
                 sleep = false,
+                stress = true,
+                temperature = true,
+            )
+            RingProtocol.SAMSUNG -> RingFeatureSupport(
+                heartRate = true,
+                bloodPressure = false,
+                spo2 = true,
+                steps = true,
+                sleep = true,
                 stress = true,
                 temperature = true,
             )

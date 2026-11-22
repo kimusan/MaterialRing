@@ -142,24 +142,36 @@ class DeviceViewModel @Inject constructor(
         devices.bind(mac, name, time.nowMillis())
 
         // Baseline device clock and battery according to detected ring protocol.
-        if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
-            command.request(
-                com.kschulz.aro.data.ble.JRingProtocol.CMD_SET_TIME,
-                com.kschulz.aro.data.ble.JRingProtocol.buildSetTimePayload(time.nowMillis()),
-            )
-            command.refreshBattery()
-        } else {
-            val clock = time.localClock()
-            val timePayload = RingPayloads.buildSetTimePayload(
-                clock.year,
-                clock.month,
-                clock.day,
-                clock.hour,
-                clock.minute,
-                clock.second,
-            )
-            command.request(Opcodes.SET_DEVICE_TIME, timePayload)
-            command.refreshBattery()
+        when (command.activeProtocol) {
+            com.kschulz.aro.data.ble.RingProtocol.JRING -> {
+                command.request(
+                    com.kschulz.aro.data.ble.JRingProtocol.CMD_SET_TIME,
+                    com.kschulz.aro.data.ble.JRingProtocol.buildSetTimePayload(time.nowMillis()),
+                )
+                command.refreshBattery()
+            }
+            com.kschulz.aro.data.ble.RingProtocol.SAMSUNG -> {
+                val sgr = com.kschulz.aro.data.ble.SamsungRingProtocol
+                val rtcFrame = sgr.buildRtcSyncFrame(time.nowMillis())
+                command.send(
+                    sgr.commandKey(sgr.CHANNEL_SETTINGS, sgr.SETTINGS_MSG_RTC_INFO_SET),
+                    rtcFrame.bytes.copyOfRange(3, rtcFrame.bytes.size),
+                )
+                command.refreshBattery()
+            }
+            com.kschulz.aro.data.ble.RingProtocol.OUDMON -> {
+                val clock = time.localClock()
+                val timePayload = RingPayloads.buildSetTimePayload(
+                    clock.year,
+                    clock.month,
+                    clock.day,
+                    clock.hour,
+                    clock.minute,
+                    clock.second,
+                )
+                command.request(Opcodes.SET_DEVICE_TIME, timePayload)
+                command.refreshBattery()
+            }
         }
         transport.readDeviceInfo()?.let { (hw, fw) ->
             devices.updateRevisions(mac, hw, fw)
