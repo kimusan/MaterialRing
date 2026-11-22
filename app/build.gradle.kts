@@ -10,18 +10,46 @@ android {
     namespace = "com.kschulz.aro"
     compileSdk = 34
 
+    val envVersionName = System.getenv("VERSION_NAME")?.removePrefix("v")?.takeIf { it.isNotBlank() }
+    val resolvedVersionName = envVersionName ?: "0.1.0"
+    val resolvedVersionCode = System.getenv("VERSION_CODE")?.toIntOrNull()
+        ?: run {
+            val parts = resolvedVersionName.substringBefore('-').split('.')
+            if (parts.size == 3) {
+                val major = parts[0].toIntOrNull() ?: 0
+                val minor = parts[1].toIntOrNull() ?: 0
+                val patch = parts[2].toIntOrNull() ?: 0
+                (major * 10_000 + minor * 100 + patch).coerceAtLeast(1)
+            } else {
+                1
+            }
+        }
+
     defaultConfig {
         applicationId = "com.kschulz.aro"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = resolvedVersionCode
+        versionName = resolvedVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+        if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
