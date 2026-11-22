@@ -109,10 +109,32 @@ class SettingsViewModel @Inject constructor(
     private suspend fun pushMonitoringIntervals(hr: Int, bp: Int, spo2: Int) {
         if (transport.isConnected) {
             syncEngine.applyMonitoringIntervals(hr, bp, spo2)
+            if (bp > 0) {
+                val pid = settings.observeActiveProfileId().first()
+                if (pid != SettingsRepository.NO_PROFILE) {
+                    syncEngine.syncAutoBp(
+                        profileId = pid,
+                        time = time,
+                        profile = profiles.getById(pid),
+                        bpIntervalMinutes = bp,
+                    )
+                }
+            }
             _message.value = "Updated monitoring schedule on ring"
         } else {
             _message.value = "Saved — will apply to ring on next connect"
         }
+    }
+
+    private suspend fun pushProfileSettingsToRing(profile: Profile, metric: Boolean = useMetric.value) {
+        syncEngine.syncProfileSettings(
+            profile = profile,
+            time = time,
+            useMetric = metric,
+            hrIntervalMinutes = autoHrInterval.value,
+            bpIntervalMinutes = autoBpInterval.value,
+            spo2IntervalMinutes = autoSpo2Interval.value,
+        )
     }
 
     fun addProfile(name: String) {
@@ -121,7 +143,7 @@ class SettingsViewModel @Inject constructor(
             val id = profiles.add(name, time.nowMillis())
             profiles.switchTo(id)
             profiles.getById(id)?.let {
-                syncEngine.syncProfileSettings(it, time, useMetric.value)
+                pushProfileSettingsToRing(it)
             }
             _message.value = "Profile \"$name\" created"
         }
@@ -139,7 +161,7 @@ class SettingsViewModel @Inject constructor(
             }
             if (activeProfileId.value == savedId || isNew) {
                 profiles.getById(savedId)?.let {
-                    syncEngine.syncProfileSettings(it, time, useMetric.value)
+                    pushProfileSettingsToRing(it)
                 }
             }
             _message.value = if (isNew) {
@@ -154,7 +176,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             profiles.switchTo(id)
             profiles.getById(id)?.let {
-                syncEngine.syncProfileSettings(it, time, useMetric.value)
+                pushProfileSettingsToRing(it)
             }
             _message.value = null
         }
@@ -228,7 +250,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settings.setUseMetric(metric)
             profiles.getById(activeProfileId.value)?.let {
-                syncEngine.syncProfileSettings(it, time, metric)
+                pushProfileSettingsToRing(it, metric)
             }
         }
     }

@@ -187,8 +187,18 @@ class HomeViewModel @Inject constructor(
                 if (profileId == SettingsRepository.NO_PROFILE) return@collect
                 when (dataType) {
                     0x04 -> engine.syncTodaySteps(profileId, time)
-                    0x01 -> engine.syncTodayHeartRate(profileId, time)
-                    0x02 -> engine.syncAutoBp(profileId, time, activeProfile.value)
+                    0x01 -> engine.syncTodayHeartRate(
+                        profileId = profileId,
+                        time = time,
+                        profile = activeProfile.value,
+                        bpIntervalMinutes = settings.observeAutoBpInterval().first(),
+                    )
+                    0x02 -> engine.syncAutoBp(
+                        profileId = profileId,
+                        time = time,
+                        profile = activeProfile.value,
+                        bpIntervalMinutes = settings.observeAutoBpInterval().first(),
+                    )
                     0x03 -> engine.syncAutoSpo2(profileId, time)
                 }
                 com.kschulz.aro.widget.AroWidgets.updateAll(context)
@@ -206,7 +216,26 @@ class HomeViewModel @Inject constructor(
                     raw = raw,
                 )
                 if (batch.steps.isNotEmpty()) health.upsertSteps(profileId, batch.steps)
-                if (batch.heartRates.isNotEmpty()) health.upsertHeartRate(profileId, batch.heartRates)
+                if (batch.heartRates.isNotEmpty()) {
+                    health.upsertHeartRate(profileId, batch.heartRates)
+                    val bpInterval = settings.observeAutoBpInterval().first()
+                    if (bpInterval > 0) {
+                        val slotMs = bpInterval.coerceAtLeast(15) * 60_000L
+                        val prof = activeProfile.value
+                        val age = prof?.age(time.localClock().year) ?: 30
+                        val sbpBase = prof?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE
+                        val dbpBase = prof?.dbpBaseline ?: Profile.DEFAULT_DBP_BASELINE
+                        val autoBp = batch.heartRates
+                            .filter { it.bpm in 40..200 }
+                            .groupBy { it.epochMs / slotMs }
+                            .map { (slot, list) ->
+                                val avgBpm = list.map { it.bpm }.average().toInt()
+                                val (sbp, dbp) = RingPayloads.estimateBpFromPpgRaw(avgBpm, age, sbpBase, dbpBase)
+                                BloodPressure(profileId, slot * slotMs, sbp, dbp, BpSource.AUTO)
+                            }
+                        if (autoBp.isNotEmpty()) health.upsertBloodPressure(profileId, autoBp)
+                    }
+                }
                 if (batch.spo2Samples.isNotEmpty()) health.upsertSpo2(profileId, batch.spo2Samples)
                 if (batch.temperatures.isNotEmpty()) health.upsertTemperature(profileId, batch.temperatures)
                 if (batch.stressSamples.isNotEmpty()) health.upsertStress(profileId, batch.stressSamples)
@@ -231,11 +260,22 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private suspend fun pushProfileSettingsToRing(profile: Profile) {
+        engine.syncProfileSettings(
+            profile = profile,
+            time = time,
+            useMetric = useMetric.value,
+            hrIntervalMinutes = settings.observeAutoHrInterval().first(),
+            bpIntervalMinutes = settings.observeAutoBpInterval().first(),
+            spo2IntervalMinutes = settings.observeAutoSpo2Interval().first(),
+        )
+    }
+
     fun switchProfile(id: Long) {
         viewModelScope.launch {
             profiles.switchTo(id)
             profiles.getById(id)?.let {
-                engine.syncProfileSettings(it, time, useMetric.value)
+                pushProfileSettingsToRing(it)
             }
         }
     }
@@ -251,7 +291,7 @@ class HomeViewModel @Inject constructor(
                 profiles.switchTo(savedId)
             }
             profiles.getById(savedId)?.let {
-                engine.syncProfileSettings(it, time, useMetric.value)
+                pushProfileSettingsToRing(it)
             }
             _lastSync.value = "Profile \"${profile.name}\" saved"
         }
@@ -426,7 +466,7 @@ class HomeViewModel @Inject constructor(
 
             // Push user calibration baseline to the ring before starting BP measurement.
             if (currentProfile != null && type == RingPayloads.MEASURE_TYPE_BLOOD_PRESSURE) {
-                engine.syncProfileSettings(currentProfile, time, useMetric.value)
+                pushProfileSettingsToRing(currentProfile)
             }
 
             var streamAbortError = false

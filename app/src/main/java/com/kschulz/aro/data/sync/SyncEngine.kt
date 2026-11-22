@@ -54,6 +54,7 @@ class SyncEngine @Inject constructor(
                 time = time,
                 profile = profile,
                 hrIntervalMinutes = hrIntervalMinutes,
+                bpIntervalMinutes = bpIntervalMinutes,
             )
         }
         if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.SAMSUNG) {
@@ -62,6 +63,7 @@ class SyncEngine @Inject constructor(
                 time = time,
                 profile = profile,
                 hrIntervalMinutes = hrIntervalMinutes,
+                bpIntervalMinutes = bpIntervalMinutes,
             )
         }
 
@@ -83,8 +85,11 @@ class SyncEngine @Inject constructor(
         }
 
         val distribution = queryDistribution()
-        val days = if (distribution != null) DistributionBitmap.daysToPull(distribution)
-        else DistributionBitmap.recentWindow()
+        val days = if (distribution != null) {
+            DistributionBitmap.daysToPull(distribution).ifEmpty { setOf(0) }
+        } else {
+            DistributionBitmap.recentWindow()
+        }
         com.kschulz.aro.data.ble.AroDbg.d(
             "sync start: distribution=${distribution?.toString(16)} days=${days.sorted()} " +
                 "newSleep=${caps.newSleepProtocol} manualBp=${caps.manualBpHistory}",
@@ -95,11 +100,14 @@ class SyncEngine @Inject constructor(
         var bpReadings = 0
         var hrSamples = 0
         var sleepSessions = 0
+        val pulledHrSamples = mutableListOf<HeartRateSample>()
 
         for (daysAgo in days) {
             val epochDay = time.epochDayForOffset(daysAgo)
             steps += pullStepsForDay(profileId, epochDay, daysAgo).size
-            hrSamples += pullHeartRate(profileId, epochDay, daysAgo, time).size
+            val dayHr = pullHeartRate(profileId, epochDay, daysAgo, time)
+            hrSamples += dayHr.size
+            pulledHrSamples += dayHr
             if (!caps.newSleepProtocol) {
                 sleepSessions += pullSleep(profileId, epochDay, daysAgo, time).size
             }
@@ -109,9 +117,28 @@ class SyncEngine @Inject constructor(
             sleepSessions += pullNewSleepProtocol(profileId, today, time).size
         }
 
-        // Blood pressure queries (0x0D auto-BP and 0x14 manual-BP) return buffered readings
-        // across days in one stream rather than taking a dayOffset.
-        bpReadings += pullAutoBp(profileId, time, profile).size
+        // Blood pressure queries:
+        // 1. Pull 0x0D auto-BP buffer for rings whose firmware populates BpDataRsp.
+        // 2. For rings like Oudmon R03 whose firmware does not populate 0x0D (returning 0xFF/empty)
+        //    and instead stores continuous background PPG measurements in 0x15 (GET_HEART_RATE),
+        //    derive calibrated BpSource.AUTO readings at the user's configured bpIntervalMinutes.
+        val autoBpReadings = pullAutoBp(profileId, time, profile)
+        bpReadings += autoBpReadings.size
+        if (bpIntervalMinutes > 0 && pulledHrSamples.isNotEmpty()) {
+            val slotMs = bpIntervalMinutes.coerceAtLeast(15) * 60_000L
+            val existingAutoSlots = autoBpReadings.map { it.epochMs / slotMs }.toSet()
+            val derivedAutoBp = deriveAutoBpFromHr(
+                profileId = profileId,
+                samples = pulledHrSamples,
+                profile = profile,
+                time = time,
+                bpIntervalMinutes = bpIntervalMinutes,
+            ).filter { (it.epochMs / slotMs) !in existingAutoSlots }
+            if (derivedAutoBp.isNotEmpty()) {
+                health.upsertBloodPressure(profileId, derivedAutoBp)
+                bpReadings += derivedAutoBp.size
+            }
+        }
         if (caps.manualBpHistory) {
             bpReadings += pullManualBp(profileId).size
         }
@@ -154,15 +181,52 @@ class SyncEngine @Inject constructor(
     }
 
     /** Fast incremental refresh for today's HR (`0x15`), triggered on `0x73` dataType `0x01`. */
-    suspend fun syncTodayHeartRate(profileId: Long, time: TimeSource): Int {
+    suspend fun syncTodayHeartRate(
+        profileId: Long,
+        time: TimeSource,
+        profile: Profile? = null,
+        bpIntervalMinutes: Int = 0,
+    ): Int {
         if (!command.isConnected) return 0
-        return pullHeartRate(profileId, time.todayEpochDay(), 0, time).size
+        val samples = pullHeartRate(profileId, time.todayEpochDay(), 0, time)
+        if (bpIntervalMinutes > 0 && samples.isNotEmpty()) {
+            val derivedBp = deriveAutoBpFromHr(
+                profileId = profileId,
+                samples = samples,
+                profile = profile,
+                time = time,
+                bpIntervalMinutes = bpIntervalMinutes,
+            )
+            if (derivedBp.isNotEmpty()) {
+                health.upsertBloodPressure(profileId, derivedBp)
+            }
+        }
+        return samples.size
     }
 
-    /** Fast incremental refresh for auto-BP (`0x0D`), triggered on `0x73` dataType `0x02`. */
-    suspend fun syncAutoBp(profileId: Long, time: TimeSource, profile: Profile?): Int {
+    /** Fast incremental refresh for auto-BP (`0x0D` with `0x15` fallback on R03), triggered on `0x73` dataType `0x02` or interval change. */
+    suspend fun syncAutoBp(
+        profileId: Long,
+        time: TimeSource,
+        profile: Profile?,
+        bpIntervalMinutes: Int = 60,
+    ): Int {
         if (!command.isConnected) return 0
-        return pullAutoBp(profileId, time, profile).size
+        val direct = pullAutoBp(profileId, time, profile)
+        if (direct.isNotEmpty()) return direct.size
+        if (bpIntervalMinutes <= 0) return 0
+        val todayHr = pullHeartRate(profileId, time.todayEpochDay(), 0, time)
+        val derived = deriveAutoBpFromHr(
+            profileId = profileId,
+            samples = todayHr,
+            profile = profile,
+            time = time,
+            bpIntervalMinutes = bpIntervalMinutes,
+        )
+        if (derived.isNotEmpty()) {
+            health.upsertBloodPressure(profileId, derived)
+        }
+        return derived.size
     }
 
     /** Fast incremental refresh for auto-SpO2 (`0xBC 0x2A`), triggered on `0x73` dataType `0x03`. */
@@ -225,12 +289,22 @@ class SyncEngine @Inject constructor(
         spo2IntervalMinutes: Int,
     ) {
         if (!command.isConnected) return
+        // On rings like Oudmon R03, JRing SMART_RING, and Samsung Galaxy Ring where continuous BP
+        // relies on background optical PPG measurements scheduled via the ring's HR monitor timer,
+        // ensure the optical sensor runs at least as often as bpIntervalMinutes whenever continuous
+        // BP is enabled.
+        val effectiveHrInterval = when {
+            hrIntervalMinutes > 0 && bpIntervalMinutes > 0 -> minOf(hrIntervalMinutes, bpIntervalMinutes)
+            hrIntervalMinutes > 0 -> hrIntervalMinutes
+            bpIntervalMinutes > 0 -> bpIntervalMinutes
+            else -> 0
+        }
         if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.JRING) {
             command.request(
                 com.kschulz.aro.data.ble.JRingProtocol.CMD_AUTO_HR_SCHEDULE,
                 com.kschulz.aro.data.ble.JRingProtocol.buildAutoHrPayload(
-                    enabled = hrIntervalMinutes > 0,
-                    intervalMinutes = hrIntervalMinutes.coerceAtLeast(10),
+                    enabled = effectiveHrInterval > 0,
+                    intervalMinutes = effectiveHrInterval.coerceAtLeast(10),
                 ),
                 timeoutMs = STREAM_TIMEOUT_MS,
             )
@@ -238,7 +312,7 @@ class SyncEngine @Inject constructor(
         }
         if (command.activeProtocol == com.kschulz.aro.data.ble.RingProtocol.SAMSUNG) {
             val frame = com.kschulz.aro.data.ble.SamsungRingProtocol.buildHealthMonitoringSettingsFrame(
-                hrIntervalMinutes = hrIntervalMinutes,
+                hrIntervalMinutes = effectiveHrInterval,
                 enableSkinTemperature = true,
                 enableStress = true,
                 enableSleepTracking = true,
@@ -255,8 +329,8 @@ class SyncEngine @Inject constructor(
         }
 
         val autoHrSwitch = RingPayloads.buildAutoHrSwitchPayload(
-            enabled = hrIntervalMinutes > 0,
-            intervalMinutes = hrIntervalMinutes.coerceAtLeast(10),
+            enabled = effectiveHrInterval > 0,
+            intervalMinutes = effectiveHrInterval.coerceIn(10, 60),
         )
         command.request(Opcodes.HR_TIMING_MONITOR_SWITCH, autoHrSwitch)
 
@@ -285,13 +359,10 @@ class SyncEngine @Inject constructor(
         time: TimeSource,
         profile: Profile?,
         hrIntervalMinutes: Int,
+        bpIntervalMinutes: Int,
     ): SyncResult {
         val nowMs = time.nowMillis()
         val today = time.todayEpochDay()
-        val currentYear = time.localClock().year
-        val age = profile?.age(currentYear) ?: 30
-        val sbpBase = profile?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE
-        val dbpBase = profile?.dbpBaseline ?: Profile.DEFAULT_DBP_BASELINE
         val sgr = com.kschulz.aro.data.ble.SamsungRingProtocol
 
         // 1. Send RTC time synchronization (Channel 11, MSG_RTC_INFO_SET = 0, RFC-SGR-001 §10.4).
@@ -310,7 +381,7 @@ class SyncEngine @Inject constructor(
         )
 
         // 3. Apply health monitoring settings (Channel 11, MSG_FULL_SETTING_INFO = 32, RFC-SGR-001 §9.11).
-        applyMonitoringIntervals(hrIntervalMinutes, 0, 60)
+        applyMonitoringIntervals(hrIntervalMinutes, bpIntervalMinutes, 60)
 
         var stepsCount = 0
         var hrCount = 0
@@ -356,18 +427,18 @@ class SyncEngine @Inject constructor(
                 if (batch.heartRates.isNotEmpty()) {
                     health.upsertHeartRate(profileId, batch.heartRates)
                     health.upsertStress(profileId, deriveStressFromHr(profileId, batch.heartRates))
-                    val derivedBp = batch.heartRates.map { hrSample ->
-                        val (sbp, dbp) = RingPayloads.estimateBpFromPpgRaw(
-                            rawValue = hrSample.bpm,
-                            age = age,
-                            sbpBaseline = sbpBase,
-                            dbpBaseline = dbpBase,
-                        )
-                        BloodPressure(profileId, hrSample.epochMs, sbp, dbp, BpSource.AUTO)
+                    val derivedBp = deriveAutoBpFromHr(
+                        profileId = profileId,
+                        samples = batch.heartRates,
+                        profile = profile,
+                        time = time,
+                        bpIntervalMinutes = bpIntervalMinutes,
+                    )
+                    if (derivedBp.isNotEmpty()) {
+                        health.upsertBloodPressure(profileId, derivedBp)
+                        bpCount += derivedBp.size
                     }
-                    health.upsertBloodPressure(profileId, derivedBp)
                     hrCount += batch.heartRates.size
-                    bpCount += derivedBp.size
                 }
                 if (batch.spo2Samples.isNotEmpty()) {
                     health.upsertSpo2(profileId, batch.spo2Samples)
@@ -413,11 +484,12 @@ class SyncEngine @Inject constructor(
         time: TimeSource,
         profile: Profile?,
         hrIntervalMinutes: Int,
+        bpIntervalMinutes: Int,
     ): SyncResult {
         val nowMs = time.nowMillis()
         val today = time.todayEpochDay()
 
-        // 1. Set foreground state, device clock, user info, step goal, and auto-HR schedule.
+        // 1. Set foreground state, device clock, user info, step goal, and auto-HR/BP schedule.
         command.request(
             com.kschulz.aro.data.ble.JRingProtocol.CMD_APP_STATE,
             com.kschulz.aro.data.ble.JRingProtocol.buildAppStatePayload(foreground = true),
@@ -445,17 +517,11 @@ class SyncEngine @Inject constructor(
                 timeoutMs = STREAM_TIMEOUT_MS,
             )
         }
-        command.request(
-            com.kschulz.aro.data.ble.JRingProtocol.CMD_AUTO_HR_SCHEDULE,
-            com.kschulz.aro.data.ble.JRingProtocol.buildAutoHrPayload(
-                enabled = hrIntervalMinutes > 0,
-                intervalMinutes = hrIntervalMinutes.coerceAtLeast(10),
-            ),
-            timeoutMs = STREAM_TIMEOUT_MS,
-        )
+        applyMonitoringIntervals(hrIntervalMinutes, bpIntervalMinutes, 60)
 
         var stepsCount = 0
         var hrCount = 0
+        var bpCount = 0
         val days = (0..6).toList()
 
         // 2. Pull recent HR history (0x16) and daily activity (0x10) for the last 7 days.
@@ -476,6 +542,17 @@ class SyncEngine @Inject constructor(
             if (parsedHr.isNotEmpty()) {
                 health.upsertHeartRate(profileId, parsedHr)
                 health.upsertStress(profileId, deriveStressFromHr(profileId, parsedHr))
+                val derivedBp = deriveAutoBpFromHr(
+                    profileId = profileId,
+                    samples = parsedHr,
+                    profile = profile,
+                    time = time,
+                    bpIntervalMinutes = bpIntervalMinutes,
+                )
+                if (derivedBp.isNotEmpty()) {
+                    health.upsertBloodPressure(profileId, derivedBp)
+                    bpCount += derivedBp.size
+                }
                 hrCount += parsedHr.size
             }
 
@@ -501,11 +578,12 @@ class SyncEngine @Inject constructor(
         val windowEndHour = minOf(today * 24 + 23, nowHour)
         runCatching { bodyBattery.recompute(profileId, windowStartHour, windowEndHour) }
 
-        AroDbg.d("jring sync done: steps=$stepsCount hr=$hrCount")
+        AroDbg.d("jring sync done: steps=$stepsCount hr=$hrCount bp=$bpCount")
         return SyncResult(
             connected = true,
             daysSynced = days.size,
             steps = stepsCount,
+            bpReadings = bpCount,
             hrSamples = hrCount,
             distributionCleared = true,
         )
@@ -753,6 +831,52 @@ class SyncEngine @Inject constructor(
                     profileId = profileId,
                     epochMs = epochHour * hourMs,
                     score = score,
+                )
+            }
+    }
+
+    /**
+     * Derives continuous [BpSource.AUTO] blood pressure readings from periodic optical PPG/HR
+     * history samples bucketed at [bpIntervalMinutes] (30/60/120 min) using the calibrated
+     * `CalcBloodPressureByHeart` transfer function ([RingPayloads.estimateBpFromPpgRaw]).
+     *
+     * Used across rings whose firmware stores continuous background PPG measurements in the
+     * periodic HR history table (`0x15` on Oudmon R03, `0x16` on JRing SMART_RING, and
+     * Channel 10 `FEATURE_HEART_RATE` on Samsung Galaxy Ring) rather than a separate `0x0D`
+     * auto-BP buffer.
+     */
+    private fun deriveAutoBpFromHr(
+        profileId: Long,
+        samples: List<HeartRateSample>,
+        profile: Profile?,
+        time: TimeSource,
+        bpIntervalMinutes: Int,
+    ): List<BloodPressure> {
+        if (bpIntervalMinutes <= 0 || samples.isEmpty()) return emptyList()
+        val slotMs = bpIntervalMinutes.coerceAtLeast(15) * 60_000L
+        val currentYear = time.localClock().year
+        val age = profile?.age(currentYear) ?: 30
+        val sbpBase = profile?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE
+        val dbpBase = profile?.dbpBaseline ?: Profile.DEFAULT_DBP_BASELINE
+
+        return samples
+            .filter { it.bpm in 40..200 }
+            .groupBy { it.epochMs / slotMs }
+            .toSortedMap()
+            .map { (slotIndex, slotSamples) ->
+                val avgBpm = slotSamples.map { it.bpm }.average().toInt()
+                val (sbp, dbp) = RingPayloads.estimateBpFromPpgRaw(
+                    rawValue = avgBpm,
+                    age = age,
+                    sbpBaseline = sbpBase,
+                    dbpBaseline = dbpBase,
+                )
+                BloodPressure(
+                    profileId = profileId,
+                    epochMs = slotIndex * slotMs,
+                    sbp = sbp,
+                    dbp = dbp,
+                    source = BpSource.AUTO,
                 )
             }
     }

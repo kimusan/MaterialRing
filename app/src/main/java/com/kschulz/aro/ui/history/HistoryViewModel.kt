@@ -303,7 +303,18 @@ class HistoryViewModel @Inject constructor(
                 command.refreshBattery()
                 val profile = profiles.getById(profileId)
                 val metric = settings.observeUseMetric().first()
-                engine.sync(profileId, time, profile, metric)
+                val hrInterval = settings.observeAutoHrInterval().first()
+                val bpInterval = settings.observeAutoBpInterval().first()
+                val spo2Interval = settings.observeAutoSpo2Interval().first()
+                engine.sync(
+                    profileId = profileId,
+                    time = time,
+                    profile = profile,
+                    useMetric = metric,
+                    hrIntervalMinutes = hrInterval,
+                    bpIntervalMinutes = bpInterval,
+                    spo2IntervalMinutes = spo2Interval,
+                )
             } finally {
                 _syncing.value = false
             }

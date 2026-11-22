@@ -34,6 +34,9 @@ class SyncEngineTest {
         var timeSentBeforeDistribution = false
         var lastTimePayload: ByteArray? = null
 
+        var lastHrSwitchPayload: ByteArray? = null
+        var lastBpSwitchPayload: ByteArray? = null
+
         override val connectionState: StateFlow<ConnectionState> =
             MutableStateFlow(if (connected) ConnectionState.CONNECTED else ConnectionState.DISCONNECTED)
 
@@ -46,6 +49,16 @@ class SyncEngineTest {
                     if (sequence.isEmpty()) timeSentBeforeDistribution = true
                     sequence.add(cmd)
                     lastTimePayload = payload
+                    ParsedFrame(cmd, false, ByteArray(0))
+                }
+
+                Opcodes.HR_TIMING_MONITOR_SWITCH -> {
+                    lastHrSwitchPayload = payload
+                    ParsedFrame(cmd, false, ByteArray(0))
+                }
+
+                Opcodes.BP_TIMING_MONITOR_SWITCH -> {
+                    lastBpSwitchPayload = payload
                     ParsedFrame(cmd, false, ByteArray(0))
                 }
 
@@ -148,9 +161,54 @@ class SyncEngineTest {
         assertEquals(5000, store.steps.single().steps)
         assertEquals(1, store.hr.size)
         assertEquals(93, store.hr.single().bpm)
-        assertEquals(1, store.bp.size)
-        assertEquals(120, store.bp.single().sbp)
-        assertEquals(80, store.bp.single().dbp)
+        val manualBp = store.bp.filter { it.source == com.kschulz.aro.data.model.BpSource.MANUAL }
+        val autoBp = store.bp.filter { it.source == com.kschulz.aro.data.model.BpSource.AUTO }
+        assertEquals(1, manualBp.size)
+        assertEquals(120, manualBp.single().sbp)
+        assertEquals(80, manualBp.single().dbp)
+        assertEquals(1, autoBp.size)
+        assertTrue(autoBp.single().sbp in 90..165)
+        assertTrue(autoBp.single().dbp in 55..105)
+    }
+
+    @Test
+    fun `continuous BP derives AUTO readings from 0x15 HR stream on R03 when 0x0D is empty and enables 0x16 HR timer`() {
+        val command = FakeCommand(distribution = distTodayUnsynced())
+        val store = RecordingStore()
+        val engine = SyncEngine(command, store, NoopBodyBattery)
+
+        // Even when continuous HR is set to Off (0), enabling continuous BP at 30m must keep the
+        // ring's 0x16 optical PPG timer enabled at 30m and derive BpSource.AUTO readings.
+        runBlocking {
+            engine.sync(
+                profileId = 1,
+                time = time,
+                hrIntervalMinutes = 0,
+                bpIntervalMinutes = 30,
+                spo2IntervalMinutes = 0,
+            )
+        }
+
+        val hrSwitch = command.lastHrSwitchPayload
+        assertNotNull(hrSwitch)
+        assertEquals(0x01, hrSwitch!![1].toInt() and 0xFF) // enabled
+        assertEquals(30, hrSwitch[2].toInt() and 0xFF) // 30-min cadence
+        val autoBp = store.bp.filter { it.source == com.kschulz.aro.data.model.BpSource.AUTO }
+        assertEquals(1, autoBp.size)
+
+        // Setting continuous BP to Off (0) produces no derived AUTO readings.
+        val storeOff = RecordingStore()
+        val engineOff = SyncEngine(command, storeOff, NoopBodyBattery)
+        runBlocking {
+            engineOff.sync(
+                profileId = 1,
+                time = time,
+                hrIntervalMinutes = 30,
+                bpIntervalMinutes = 0,
+                spo2IntervalMinutes = 0,
+            )
+        }
+        assertTrue(storeOff.bp.none { it.source == com.kschulz.aro.data.model.BpSource.AUTO })
     }
 
     @Test
