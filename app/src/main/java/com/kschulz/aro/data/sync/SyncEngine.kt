@@ -60,6 +60,7 @@ class SyncEngine @Inject constructor(
             return syncSamsung(
                 profileId = profileId,
                 time = time,
+                profile = profile,
                 hrIntervalMinutes = hrIntervalMinutes,
             )
         }
@@ -282,10 +283,15 @@ class SyncEngine @Inject constructor(
     private suspend fun syncSamsung(
         profileId: Long,
         time: TimeSource,
+        profile: Profile?,
         hrIntervalMinutes: Int,
     ): SyncResult {
         val nowMs = time.nowMillis()
         val today = time.todayEpochDay()
+        val currentYear = time.localClock().year
+        val age = profile?.age(currentYear) ?: 30
+        val sbpBase = profile?.sbpBaseline ?: Profile.DEFAULT_SBP_BASELINE
+        val dbpBase = profile?.dbpBaseline ?: Profile.DEFAULT_DBP_BASELINE
         val sgr = com.kschulz.aro.data.ble.SamsungRingProtocol
 
         // 1. Send RTC time synchronization (Channel 11, MSG_RTC_INFO_SET = 0, RFC-SGR-001 §10.4).
@@ -308,6 +314,7 @@ class SyncEngine @Inject constructor(
 
         var stepsCount = 0
         var hrCount = 0
+        var bpCount = 0
         var spo2Count = 0
         var sleepCount = 0
 
@@ -349,7 +356,18 @@ class SyncEngine @Inject constructor(
                 if (batch.heartRates.isNotEmpty()) {
                     health.upsertHeartRate(profileId, batch.heartRates)
                     health.upsertStress(profileId, deriveStressFromHr(profileId, batch.heartRates))
+                    val derivedBp = batch.heartRates.map { hrSample ->
+                        val (sbp, dbp) = RingPayloads.estimateBpFromPpgRaw(
+                            rawValue = hrSample.bpm,
+                            age = age,
+                            sbpBaseline = sbpBase,
+                            dbpBaseline = dbpBase,
+                        )
+                        BloodPressure(profileId, hrSample.epochMs, sbp, dbp, BpSource.AUTO)
+                    }
+                    health.upsertBloodPressure(profileId, derivedBp)
                     hrCount += batch.heartRates.size
+                    bpCount += derivedBp.size
                 }
                 if (batch.spo2Samples.isNotEmpty()) {
                     health.upsertSpo2(profileId, batch.spo2Samples)
@@ -374,11 +392,12 @@ class SyncEngine @Inject constructor(
         val windowEndHour = minOf(today * 24 + 23, nowHour)
         runCatching { bodyBattery.recompute(profileId, windowStartHour, windowEndHour) }
 
-        AroDbg.d("samsung sync done: steps=$stepsCount hr=$hrCount spo2=$spo2Count sleep=$sleepCount")
+        AroDbg.d("samsung sync done: steps=$stepsCount hr=$hrCount bp=$bpCount spo2=$spo2Count sleep=$sleepCount")
         return SyncResult(
             connected = true,
             daysSynced = 1,
             steps = stepsCount,
+            bpReadings = bpCount,
             hrSamples = hrCount,
             spo2Samples = spo2Count,
             sleepSessions = sleepCount,

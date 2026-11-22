@@ -107,7 +107,7 @@ class RingCommandClient @Inject constructor(
                     _realTimeHeartRate.value = bpm
                     _liveMeasurements.tryEmit(
                         RingPayloads.LiveMeasurementPacket(
-                            type = RingPayloads.MEASURE_TYPE_HEART_RATE,
+                            type = 0, // matches both HR and calibrated PPG BP live measurements
                             errCode = 0,
                             value = bpm,
                         ),
@@ -370,7 +370,7 @@ class RingCommandClient @Inject constructor(
                 _realTimeHeartRate.value = hr
                 _liveMeasurements.tryEmit(
                     RingPayloads.LiveMeasurementPacket(
-                        type = RingPayloads.MEASURE_TYPE_HEART_RATE,
+                        type = 0, // matches both HR and calibrated PPG BP live measurements
                         errCode = 0,
                         value = hr,
                     ),

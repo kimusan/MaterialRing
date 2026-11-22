@@ -51,7 +51,7 @@ data class RingFeatureSupport(
             )
             RingProtocol.SAMSUNG -> RingFeatureSupport(
                 heartRate = true,
-                bloodPressure = false,
+                bloodPressure = true,
                 spo2 = true,
                 steps = true,
                 sleep = true,
